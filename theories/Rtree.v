@@ -111,6 +111,13 @@ Proof.
   induction 1; now constructor.
 Qed.
 
+Lemma Forall_In' {A : Type} {P : A -> Prop} {l : list A} {x : A} :
+  Forall P l -> In x l -> P x.
+Proof.
+  intros.
+  eapply Forall_forall; eassumption.
+Qed.
+
 Lemma Forall_Impl {A : Type} {P Q : A -> Prop} {l : list A} :
   Forall P l -> Forall (fun t => P t -> Q t) l -> Forall Q l.
 Proof.
@@ -127,12 +134,141 @@ Proof.
   induction 1; now constructor.
 Qed.
 
-Lemma Foralli_impl {A : Type} (P Q : nat -> A -> Prop) :
-(forall i a, P i a -> Q i a) -> forall {l : list A}, Foralli P l -> Foralli Q l.
+Lemma Foralli_aux_impl {A : Type} (P Q : nat -> A -> Prop) {l : list A} {n : nat} :
+(forall i a, i < n + length l -> P i a -> Q i a) -> Foralli_aux P n l -> Foralli_aux Q n l.
 Proof.
-  intros Himpl.
-  unfold Foralli. generalize 0.
-  induction 1; constructor; auto.
+  induction 2; constructor.
+  - apply H; simpl. omega. assumption.
+  - apply IHForalli_aux. intros.
+    apply H. simpl. omega. assumption.
+Qed.
+
+Lemma Foralli_impl {A : Type} (P Q : nat -> A -> Prop) {l : list A} :
+(forall i a, i < length l -> P i a -> Q i a) -> Foralli P l -> Foralli Q l.
+Proof.
+  rewrite <- (plus_O_n (length l)).
+  apply Foralli_aux_impl.
+Qed.
+
+Require Import Sorting Orders Permutation.
+
+Lemma Permutation_Forall {A : Type} {P : A -> Prop} {l l' : list A} :
+  Permutation l l' -> Forall P l' -> Forall P l.
+Proof.
+  induction 1; intros Htmp;
+  repeat match goal with
+  | H : Forall _ (_ :: _) |- _ => inversion H; subst; clear H
+  end; repeat constructor; auto.
+Qed.
+
+Fixpoint rseq (n : nat) :=
+  match n with
+  | O => []
+  | S n => n :: rseq n
+  end.
+
+Lemma rseq_In (M : nat) (n : nat) : n < M <-> In n (rseq M).
+Proof.
+  induction M; split; intros; simpl in *.
+  - inversion H.
+  - inversion H.
+  - destruct (le_lt_dec M n).
+    + left. omega.
+    + right. now apply IHM.
+  - destruct H.
+    + omega.
+    + constructor. now apply IHM.
+Qed.
+
+Lemma SortedNoDup_seq : forall l, StronglySorted gt l ->
+  forall M, NoDup l -> Forall (fun x => x < M) l ->
+  length l >= M -> l = rseq M.
+Proof.
+  induction 1; intros; simpl in *.
+  - inversion H1; now subst.
+  - inversion H1; subst; clear H1; simpl in *.
+    inversion H2; subst; clear H2; simpl in *.
+    specialize (fun H => IHStronglySorted (length l) ltac:(assumption) H (le_n _)).
+    assert (l = rseq (length l)) as Hl.
+    { apply IHStronglySorted.
+      apply Forall_forall; intros.
+      pose proof (Forall_In' H0 H1).
+      omega. }
+    assert (~ a < length l) as Ha.
+    { contradict H6. rewrite Hl. now apply rseq_In. }
+    assert (M = S (length l)) as -> by omega.
+    simpl. f_equal.
+    + omega.
+    + assumption.
+Qed.
+
+Lemma SortedNoDup_In : forall l, StronglySorted gt l ->
+  forall M j,
+  NoDup l -> Forall (fun x => x < M) l ->
+  length l >= M -> j < M -> In j l.
+Proof.
+  intros.
+  rewrite SortedNoDup_seq with (M := M); try assumption.
+  now apply rseq_In.
+Qed.
+
+Module NatOrder <: TotalLeBool.
+  Definition t := nat.
+  Definition leb x y := Nat.leb y x.
+  Theorem leb_total : forall a1 a2, is_true (leb a1 a2) \/ is_true (leb a2 a1).
+  Proof.
+    unfold leb; intros.
+    destruct (le_lt_dec a1 a2).
+    - right. now apply leb_correct.
+    - left. apply leb_correct. auto with arith.
+  Qed.
+End NatOrder.
+
+Module Import NatSort := Sort NatOrder.
+
+Lemma StronglySortedNoDup_ge_gt :
+  forall l,
+  StronglySorted (fun a b => is_true (Nat.leb b a)) l ->
+  NoDup l ->
+  StronglySorted gt l.
+Proof.
+  induction 1; intros.
+  - constructor.
+  - inversion H1; subst; clear H1. specialize (IHStronglySorted H5).
+    constructor.
+    + assumption.
+    + apply Forall_forall; intros.
+      assert (a <> x).
+      { contradict H4; now subst. }
+      apply Forall_In' with (2 := H1) in H0; simpl in H0.
+      apply leb_complete in H0. omega.
+Qed.
+
+Lemma NoDupFull_In : forall l M j,
+  NoDup l -> Forall (fun x => x < M) l ->
+  length l >= M -> j < M -> In j l.
+Proof.
+  intros.
+  pose proof (SortedNoDup_In (sort l)).
+  assert (Permutation (sort l) l).
+  { apply Permutation_sym. apply Permuted_sort. }
+  eapply Permutation_in.
+  { eassumption. }
+  assert (NoDup (sort l)).
+  { eapply Permutation_NoDup'; eassumption. }
+  apply H3 with (M := length l).
+  + assert (StronglySorted (fun a b => is_true (Nat.leb b a)) (sort l)).
+    { apply StronglySorted_sort.
+      unfold Transitive; intros.
+      apply leb_correct. apply leb_complete in H6. apply leb_complete in H7.
+      omega. }
+    now apply StronglySortedNoDup_ge_gt.
+  + assumption.
+  + eapply Permutation_Forall.
+    * eassumption.
+    * eapply Forall_impl with (2 := H0); intros. omega.
+  + erewrite Permutation_length; [|eassumption]. constructor.
+  + omega.
 Qed.
 
 (** Regular trees. *)
@@ -244,8 +380,10 @@ Section Rtree.
     lift_rtree_rec_body lift_rtree_rec depth n tree.
   Definition lift_rtree n tree := (lift_rtree_rec 0 n tree).
 
-  Lemma wf_lift_rtree_rec' :
+  Fixpoint wf_lift_rtree_rec' (f : nat) :
     forall ctx tree stk defs seen stk' newstk d d' newd,
+    NoDup seen /\ Forall (fun x => x < length defs) seen ->
+    f + length seen >= length defs ->
     d = length stk ->
     d' = length stk' ->
     newd = length newstk ->
@@ -255,7 +393,7 @@ Section Rtree.
     wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree).
   Proof.
     intros ctx tree stk.
-    induction stk, tree using t_ind'; intros defs' seen stk' newstk d d' newd Hd Hd' Hnewd Hwf;
+    induction stk, tree using t_ind'; intros defs' seen stk' newstk d d' newd Hseen Hf Hd Hd' Hnewd Hwf;
     inversion Hwf; subst; clear Hwf; simpl in *.
     - destruct (length stk + S (length stk') <=? i) eqn:?.
       + unshelve econstructor. apply leb_complete in Heqb. omega.
@@ -264,23 +402,19 @@ Section Rtree.
       { apply leb_correct_conv. omega. }
       unshelve econstructor 2; auto.
       + now rewrite map_length.
-      + gen_safe_proof.
-        set (F := lift_rtree_rec (S (length stk')) (length newstk)) in *.
-        assert 
-        (forall ctx tree stk defs seen stk' newstk d d' newd,
-        d = length stk ->
-        d' = length stk' ->
-        newd = length newstk ->
-        wf_rtree_rec (stk' ++ ctx) defs seen stk tree ->
-        let F := lift_rtree_rec (d + S d') newd in
-        let F' := lift_rtree_rec (S d') newd in
-        wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree)) as FIX.
-        { admit. }
-        intros.
+      + gen_safe_proof. intros.
         unshelve erewrite safe_nth_map.
         { assumption. }
-        specialize (FIX ctx (safe_nth defs' (j; Hj)) [] defs' (j :: seen) stk' newstk _ _ _ eq_refl eq_refl eq_refl).
-        apply FIX. assumption.
+        destruct f.
+        { exfalso. clear H5 Hs. revert j Hj seen Hseen Hf H4; clear; simpl; intros.
+          destruct Hseen. apply H4. apply NoDupFull_In with (M := length defs'); auto. }
+        assert (f + length (j :: seen) >= length defs') as Hf'.
+        { simpl. omega. }
+        assert (NoDup (j :: seen) /\ Forall (fun x => x < length defs') (j :: seen)) as Hseen'.
+        { destruct Hseen; split; simpl; constructor; auto. }
+        specialize (wf_lift_rtree_rec' f ctx (safe_nth defs' (j; Hj)) [] defs' (j :: seen)
+          stk' newstk _ _ _ Hseen' Hf' eq_refl eq_refl eq_refl).
+        apply wf_lift_rtree_rec'. assumption.
     - constructor.
     - unshelve econstructor.
       { now rewrite map_length. }
@@ -291,19 +425,26 @@ Section Rtree.
     end.
     destruct Htmp as [Htmp _].
     specialize (Htmp H); clear H.
-    specialize (fun x H => Htmp x H defs' seen stk' newstk _ _ _ eq_refl eq_refl eq_refl).
+    specialize (fun x H => Htmp x H defs' seen stk' newstk _ _ _ Hseen Hf eq_refl eq_refl eq_refl).
     apply Htmp; trivial.
     apply safe_nth_In.
-  Admitted.
+  Qed.
+
 
   Theorem wf_lift_rtree_rec :
     forall ctx defs tree stk newstk i,
+    i < length defs ->
     wf_rtree_rec (stk ++ ctx) defs [i] [] tree ->
     let F := lift_rtree_rec (S (length stk)) (length newstk) in
     wf_rtree_rec ((stk ++ newstk) ++ ctx) (map F defs) [i] [] (F tree).
   Proof.
     intros.
-    eapply (wf_lift_rtree_rec' ctx tree [] defs [i] stk newstk _ _ _ eq_refl eq_refl eq_refl).
+    assert (pred (length defs) + length [i] >= length defs) as Hf.
+    { simpl. omega. }
+    assert (NoDup [i] /\ Forall (fun x => x < length defs) [i]) as Hseen.
+    { split; repeat constructor; auto. }
+    eapply (wf_lift_rtree_rec' (pred (length defs)) ctx tree [] defs [i] stk newstk _ _ _
+      Hseen Hf eq_refl eq_refl eq_refl).
     assumption.
   Qed.
 
@@ -363,9 +504,8 @@ Section Rtree.
       intros. now apply H1.
     + apply Foralli_map.
       apply Foralli_impl with (2 := H5).
-      intros. apply wf_lift_rtree_rec. assumption.
+      intros. apply wf_lift_rtree_rec; assumption.
   Qed.
-
 
   Definition subst_rtree_rec_body (F : nat -> list t -> t -> t)
     (depth : nat) (sub : list t) (tree : t) : t :=
