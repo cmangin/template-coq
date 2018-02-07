@@ -1,98 +1,17 @@
 Require Import List Program Arith Omega.
 
-(** Common library. *)
+(** ========== Common library ========== *)
 
-Notation "( x ; y )" := (exist _ x y).
+(** === Indexed Forall === *)
 
-Program Fixpoint safe_nth {A} (l : list A) (n : nat | n < length l) : A :=
-  match l with
-  | nil => !
-  | hd :: tl =>
-    match n with
-    | 0 => hd
-    | S n => safe_nth tl n
-    end
-  end.
-
-Next Obligation.
-  simpl in H. inversion H.
-Qed.
-Next Obligation.
-  simpl in H. auto with arith.
-Qed.
-
-Ltac gen_safe_proof :=
-  match goal with
-  |- context [safe_nth _ (_ ; ?H)] =>
-      tryif is_var H then fail else
-        let Hs := fresh "Hs" in
-        generalize H as Hs
-  end.
-
-(* We could do without [proof_irrelevance]. *)
-Lemma safe_nth_app2 {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
-  safe_nth (l1 ++ l2) (length l1 + n ; H1) = safe_nth l2 (n ; H2).
-Proof.
-  induction l1; simpl in *.
-  - f_equal. f_equal. apply proof_irrelevance.
-  - erewrite <- IHl1. reflexivity.
-Qed.
-
-Lemma safe_nth_app2' {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
-  safe_nth (l1 ++ l2) (n + length l1 ; H1) = safe_nth l2 (n ; H2).
-Proof.
-  simpl in *. revert H1.
-  rewrite plus_comm; intros H1.
-  apply safe_nth_app2.
-Qed.
-
-Lemma safe_nth_app1 {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
-  safe_nth (l1 ++ l2) (n ; H1) = safe_nth l1 (n ; H2).
-Proof.
-  revert n H1 H2;
-  induction l1; simpl in *;
-  intros n H1 H2.
-  - inversion H2.
-  - destruct n.
-    + reflexivity.
-    + erewrite <- IHl1. reflexivity.
-Qed.
-
+(* Same as [Forall], but depending on the position in the list. *)
 Inductive Foralli_aux {A : Type} (P : nat -> A -> Prop) : nat -> list A -> Prop :=
 | Foralli_nil : forall (n : nat), Foralli_aux P n []
 | Foralli_cons : forall (x : A) (l : list A) (i : nat),
     P i x -> Foralli_aux P (S i) l -> Foralli_aux P i (x :: l).
 Definition Foralli {A} P (l : list A) := (Foralli_aux P 0 l).
 
-Lemma safe_nth_Forall {A} (P : A -> Prop) (l : list A) (n : nat | n < length l) :
-  Forall P l -> P (safe_nth l n).
-Proof.
-  intros H; revert n. induction H; intros [n Hn]; [inversion Hn|].
-  now destruct n; simpl.
-Qed.
-
-Lemma safe_nth_map {A B} (F : A -> B) (l : list A) (n : nat) H1 H2 :
-  safe_nth (map F l) (n ; H1) = F (safe_nth l (n ; H2)).
-Proof.
-revert n H1 H2.
-  induction l; simpl in *;
-  intros n H1 H2.
-  - inversion H1.
-  - destruct n.
-    + reflexivity.
-    + erewrite <- IHl. reflexivity.
-Qed.
-
-Lemma safe_nth_In {A} (l : list A) (n : nat | n < length l) :
-  In (safe_nth l n) l.
-Proof.
-  revert n.
-  induction l; intros [n Hn]; simpl in *.
-  - inversion Hn.
-  - destruct n; [left | right].
-    + reflexivity.
-    + apply IHl.
-Qed.
+(* Some lemmas about [Foralli], but also [Forall] which is lacking in the stdlib. *)
 
 Lemma Forall_app {A} (P : A -> Prop) (l1 l2 : list A) :
   Forall P (l1 ++ l2) -> Forall P l1 /\ Forall P l2.
@@ -111,11 +30,17 @@ Proof.
   induction 1; now constructor.
 Qed.
 
-Lemma Forall_In' {A : Type} {P : A -> Prop} {l : list A} {x : A} :
+Lemma Forall_In {A : Type} {P : A -> Prop} {l : list A} {x : A} :
   Forall P l -> In x l -> P x.
 Proof.
   intros.
   eapply Forall_forall; eassumption.
+Qed.
+
+Lemma Forall_forall' {A : Type} {P : A -> Prop} {l : list A} :
+  Forall P l -> (forall x : A, In x l -> P x).
+Proof.
+  apply Forall_forall.
 Qed.
 
 Lemma Forall_Impl {A : Type} {P Q : A -> Prop} {l : list A} :
@@ -149,6 +74,108 @@ Proof.
   rewrite <- (plus_O_n (length l)).
   apply Foralli_aux_impl.
 Qed.
+
+
+(** === Safe access in a list === *)
+
+Notation "( x ; y )" := (exist _ x y).
+
+Program Fixpoint safe_nth {A} (l : list A) (n : nat | n < length l) : A :=
+  match l with
+  | nil => !
+  | hd :: tl =>
+    match n with
+    | 0 => hd
+    | S n => safe_nth tl n
+    end
+  end.
+
+Next Obligation.
+  simpl in H. inversion H.
+Qed.
+Next Obligation.
+  simpl in H. auto with arith.
+Qed.
+
+(* Sometimes the [n < length l] proof is too big, we define this tactic for
+   readability purposes. We do not actually care about the proof itself
+   anyway, since it is provably irrelevant. *)
+(* Additionally, we might need this if we want to rewrite the type of the proof. *)
+Ltac gen_safe_proof :=
+  match goal with
+  |- context [safe_nth _ (_ ; ?H)] =>
+      tryif is_var H then fail else
+        let Hs := fresh "Hs" in
+        generalize H as Hs
+  end.
+
+(* A few lemmas about [safe_nth] and standard list definitions. *)
+
+Lemma safe_nth_app2 {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
+  safe_nth (l1 ++ l2) (length l1 + n ; H1) = safe_nth l2 (n ; H2).
+Proof.
+  induction l1; simpl in *.
+  - f_equal. f_equal. 
+    (* We could do without [proof_irrelevance]. *) apply proof_irrelevance.
+  - erewrite <- IHl1. reflexivity.
+Qed.
+
+Lemma safe_nth_app2' {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
+  safe_nth (l1 ++ l2) (n + length l1 ; H1) = safe_nth l2 (n ; H2).
+Proof.
+  simpl in *. revert H1.
+  rewrite plus_comm; intros H1.
+  apply safe_nth_app2.
+Qed.
+
+Lemma safe_nth_app1 {A : Type} (l1 l2 : list A) (n : nat) H1 H2 :
+  safe_nth (l1 ++ l2) (n ; H1) = safe_nth l1 (n ; H2).
+Proof.
+  revert n H1 H2;
+  induction l1; simpl in *;
+  intros n H1 H2.
+  - inversion H2.
+  - destruct n.
+    + reflexivity.
+    + erewrite <- IHl1. reflexivity.
+Qed.
+
+Lemma safe_nth_map {A B} (F : A -> B) (l : list A) (n : nat) H1 H2 :
+  safe_nth (map F l) (n ; H1) = F (safe_nth l (n ; H2)).
+Proof.
+revert n H1 H2.
+  induction l; simpl in *;
+  intros n H1 H2.
+  - inversion H1.
+  - destruct n.
+    + reflexivity.
+    + erewrite <- IHl. reflexivity.
+Qed.
+
+Lemma safe_nth_In {A} (l : list A) (n : nat | n < length l) :
+  In (safe_nth l n) l.
+Proof.
+  revert n.
+  induction l; intros [n Hn]; simpl in *.
+  - inversion Hn.
+  - destruct n; [left | right].
+    + reflexivity.
+    + apply IHl.
+Qed.
+
+(* One useful lemma about [safe_nth] and [Forall]. *)
+
+Lemma safe_nth_Forall {A} (P : A -> Prop) (l : list A) (n : nat | n < length l) :
+  Forall P l -> P (safe_nth l n).
+Proof.
+  intros H.
+  eapply Forall_In.
+  - eassumption.
+  - apply safe_nth_In.
+Qed.
+
+
+(** ========== Recursion on a set of variables. ========== *)
 
 Require Import Sorting Orders Permutation.
 
@@ -192,7 +219,7 @@ Proof.
     assert (l = rseq (length l)) as Hl.
     { apply IHStronglySorted.
       apply Forall_forall; intros.
-      pose proof (Forall_In' H0 H1).
+      pose proof (Forall_In H0 H1).
       omega. }
     assert (~ a < length l) as Ha.
     { contradict H6. rewrite Hl. now apply rseq_In. }
@@ -240,11 +267,12 @@ Proof.
     + apply Forall_forall; intros.
       assert (a <> x).
       { contradict H4; now subst. }
-      apply Forall_In' with (2 := H1) in H0; simpl in H0.
+      apply Forall_In with (2 := H1) in H0; simpl in H0.
       apply leb_complete in H0. omega.
 Qed.
 
-Lemma NoDupFull_In : forall l M j,
+(* Main theorem that allows the recursion. *)
+Theorem NoDupFull_In : forall l M j,
   NoDup l -> Forall (fun x => x < M) l ->
   length l >= M -> j < M -> In j l.
 Proof.
@@ -271,6 +299,41 @@ Proof.
   + omega.
 Qed.
 
+(* Induction principle to recurse on a set of variables. *)
+Fixpoint seen_rect (MAX : nat) (P : list nat -> Type)
+  (f : forall (seen : list nat)
+    (REC : forall (x : nat), x < MAX -> ~ In x seen -> P (x :: seen)), P seen)
+  (fuel : nat) (seen : list nat)
+  (Hrec : NoDup seen /\ Forall (fun x => x < MAX) seen /\ MAX <= fuel + length seen)
+    {struct fuel} : P seen.
+Proof.
+  apply (f seen).
+  intros x Hx HxIn.
+  destruct Hrec as [HseenNoDup [HseenMAX Hfuel]].
+  destruct fuel as [|fuel].
+  - exfalso. apply HxIn.
+    apply NoDupFull_In with (M := MAX); assumption.
+  - apply (seen_rect MAX P f fuel (x :: seen)).
+    repeat split; repeat constructor; try assumption.
+    simpl in *. rewrite <- plus_n_Sm. assumption.
+Qed.
+
+(** ========== Regular trees ========== *)
+
+(* The [crush] tactic is intended to solve most arithmetic goals we will
+   encounter. It fails if it cannot solve the goal. *)
+Ltac make_one_simpl :=
+  rewrite map_length in * ||
+  rewrite app_length in * ||
+  match goal with
+  | t := _ : _ |- _ => subst t
+  | H : _ <=? _ = true |- _ => apply leb_complete in H
+  | H : _ <=? _ = false |- _ => apply leb_complete_conv in H
+  | |- _ <=? _ = true => apply leb_correct
+  | |- _ <=? _ = false => apply leb_correct_conv
+  end.
+Ltac crush := try assumption; abstract (repeat (try assumption; make_one_simpl); auto; omega).
+
 (** Regular trees. *)
 
 Section Rtree.
@@ -285,23 +348,21 @@ Section Rtree.
     (fParam : forall stk i j, P stk (rParam i j))
     (fNode : forall stk x sons, Forall (P stk) sons -> P stk (rNode x sons))
     (fRec : forall stk j defs, Forall (P (j :: stk)) defs -> P stk (rRec j defs))
-      (stk : list nat) (tree : t) : P stk tree.
-  Proof.
-    destruct tree.
-    - apply fParam.
-    - apply fNode.
-      revert sons; fix aux 1; destruct sons.
-      + constructor.
-      + constructor.
-        * apply t_ind'; assumption.
-        * apply aux.
-    - apply fRec.
-      revert defs; fix aux 1; destruct defs.
-      + constructor.
-      + constructor.
-        * apply t_ind'; assumption.
-        * apply aux.
-  Defined.
+      (stk : list nat) (tree : t) : P stk tree :=
+    let REC := t_ind' P fParam fNode fRec in
+    match tree with
+    | rParam i j => fParam stk i j
+    | rNode x sons => fNode stk x sons ((fix aux l : Forall _ l :=
+        match l with
+        | [] => Forall_nil _
+        | hd :: tl => Forall_cons hd (REC stk hd) (aux tl)
+        end) sons)
+    | rRec j defs => fRec stk j defs ((fix aux l : Forall _ l :=
+        match l with
+        | [] => Forall_nil _
+        | hd :: tl => Forall_cons hd (REC (j :: stk) hd) (aux tl)
+        end) defs)
+    end.
 
   (** Invariants about this structure. *)
   (* Recs are productive. *)
@@ -320,52 +381,20 @@ Section Rtree.
       wf_rtree_rec ctx defs seen stk (rRec j loc_defs).
 
   (* Indices are within range and Rec nodes are well-formed. *)
-  (* Consider [wf_rtree_aux stk tree].
+  (* Consider [wf_rtree stk tree].
      The tree [tree] has free variables described by [stk]. *)
-  Inductive wf_rtree_aux : forall (stk : list nat), t -> Prop :=
+  Inductive wf_rtree : forall (stk : list nat), t -> Prop :=
   | wfrParam : forall stk i j
       (Hi : i < length stk) (Hj : j < safe_nth stk (i ; Hi)),
-      wf_rtree_aux stk (rParam i j)
+      wf_rtree stk (rParam i j)
   | wfrNode : forall stk x sons,
-      Forall (wf_rtree_aux stk) sons ->
-      wf_rtree_aux stk (rNode x sons)
+      Forall (wf_rtree stk) sons ->
+      wf_rtree stk (rNode x sons)
   | wfrRec : forall stk j defs,
-      j < length defs -> Forall (wf_rtree_aux (j :: stk)) defs ->
+      j < length defs -> Forall (wf_rtree (j :: stk)) defs ->
       Foralli (fun i => wf_rtree_rec stk defs [i] []) defs ->
-      wf_rtree_aux stk (rRec j defs).
-  Definition wf_rtree tree := (wf_rtree_aux [] tree).
-
-(*
-  Fixpoint t_ind_wf (P : list nat -> t -> Prop)
-    (fParam : forall stk i j (Hi : i < length stk) (Hj : j < safe_nth stk (i ; Hi)),
-      P stk (rParam i j))
-    (fNode : forall stk x sons,
-      Forall (wf_rtree_aux stk) sons ->
-      Forall (P stk) sons ->
-      P stk (rNode x sons))
-    (fRec : forall stk j defs (Hj : j < length defs),
-      Forall (wf_rtree_aux (j :: stk)) defs ->
-      Foralli (fun i => wf_rtree_rec stk defs [i] []) defs ->
-      Forall (P (j :: stk)) defs -> P stk (rRec j defs))
-    (stk : list nat) (tree : t) : wf_rtree_aux stk tree -> P stk tree.
-  Proof.
-    destruct tree; intros Hwf; inversion Hwf; subst; clear Hwf.
-    - eapply fParam; eassumption.
-    - apply fNode; try assumption.
-      induction sons; [constructor|].
-      inversion H1; subst; clear H1.
-      constructor.
-      + apply t_ind_wf; assumption.
-      + apply IHsons; assumption.
-    - apply fRec; try assumption.
-      clear H1 H4.
-      induction defs; [constructor|].
-      inversion H3; subst; clear H3.
-      constructor.
-      + apply t_ind_wf; assumption.
-      + apply IHdefs; assumption.
-  Defined.
-*)
+      wf_rtree stk (rRec j defs).
+  Definition wf_rtree_closed tree := (wf_rtree [] tree).
 
   (** Lifting and substitution. *)
   Definition lift_rtree_rec_body (F : nat -> nat -> t -> t)
@@ -380,56 +409,40 @@ Section Rtree.
     lift_rtree_rec_body lift_rtree_rec depth n tree.
   Definition lift_rtree n tree := (lift_rtree_rec 0 n tree).
 
-  Fixpoint wf_lift_rtree_rec' (f : nat) :
-    forall ctx tree stk defs seen stk' newstk d d' newd,
-    NoDup seen /\ Forall (fun x => x < length defs) seen ->
-    f + length seen >= length defs ->
-    d = length stk ->
-    d' = length stk' ->
-    newd = length newstk ->
+
+  Lemma wf_lift_rtree_rec' :
+    forall fuel defs seen,
+    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
+    forall ctx tree stk stk' newstk,
+    let d := length stk in
+    let d' := length stk' in
+    let newd := length newstk in
     wf_rtree_rec (stk' ++ ctx) defs seen stk tree ->
     let F := lift_rtree_rec (d + S d') newd in
     let F' := lift_rtree_rec (S d') newd in
-    wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree).
+      wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree).
   Proof.
-    intros ctx tree stk.
-    induction stk, tree using t_ind'; intros defs' seen stk' newstk d d' newd Hseen Hf Hd Hd' Hnewd Hwf;
+    intros fuel defs seen Hrec.
+    pattern seen. refine (seen_rect (length defs) _ _ fuel seen Hrec); clear.
+    intros seen REC ctx tree stk stk' newstk.
+    induction stk, tree using t_ind'; intros ? ? ? Hwf;
     inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (length stk + S (length stk') <=? i) eqn:?.
-      + unshelve econstructor. apply leb_complete in Heqb. omega.
-      + econstructor. assumption.
-    - assert (length stk + S (length stk') <=? length stk = false) as ->.
-      { apply leb_correct_conv. omega. }
-      unshelve econstructor 2; auto.
-      + now rewrite map_length.
-      + gen_safe_proof. intros.
-        unshelve erewrite safe_nth_map.
-        { assumption. }
-        destruct f.
-        { exfalso. clear H5 Hs. revert j Hj seen Hseen Hf H4; clear; simpl; intros.
-          destruct Hseen. apply H4. apply NoDupFull_In with (M := length defs'); auto. }
-        assert (f + length (j :: seen) >= length defs') as Hf'.
-        { simpl. omega. }
-        assert (NoDup (j :: seen) /\ Forall (fun x => x < length defs') (j :: seen)) as Hseen'.
-        { destruct Hseen; split; simpl; constructor; auto. }
-        specialize (wf_lift_rtree_rec' f ctx (safe_nth defs' (j; Hj)) [] defs' (j :: seen)
-          stk' newstk _ _ _ Hseen' Hf' eq_refl eq_refl eq_refl).
-        apply wf_lift_rtree_rec'. assumption.
+    - destruct (d + S d' <=? i) eqn:?.
+      + econstructor; crush.
+      + econstructor; crush.
+    - assert (d + S d' <=? length stk = false) as -> by crush.
+      econstructor 2; trivial.
+      erewrite safe_nth_map.
+      apply REC; eassumption.
     - constructor.
-    - unshelve econstructor.
-      { now rewrite map_length. }
-      unshelve erewrite safe_nth_map.
-      { assumption. }
-    match goal with
-    | H : Forall ?P ?l |- _ => pose proof (iff_and (Forall_forall P l)) as Htmp
-    end.
-    destruct Htmp as [Htmp _].
-    specialize (Htmp H); clear H.
-    specialize (fun x H => Htmp x H defs' seen stk' newstk _ _ _ Hseen Hf eq_refl eq_refl eq_refl).
-    apply Htmp; trivial.
-    apply safe_nth_In.
+    - rename defs0 into locdefs.
+      econstructor.
+      erewrite safe_nth_map.
+      eapply Forall_forall' in H.
+      + apply H; eassumption.
+      + apply safe_nth_In.
+    Unshelve. all: crush.
   Qed.
-
 
   Theorem wf_lift_rtree_rec :
     forall ctx defs tree stk newstk i,
@@ -439,58 +452,38 @@ Section Rtree.
     wf_rtree_rec ((stk ++ newstk) ++ ctx) (map F defs) [i] [] (F tree).
   Proof.
     intros.
-    assert (pred (length defs) + length [i] >= length defs) as Hf.
-    { simpl. omega. }
-    assert (NoDup [i] /\ Forall (fun x => x < length defs) [i]) as Hseen.
-    { split; repeat constructor; auto. }
-    eapply (wf_lift_rtree_rec' (pred (length defs)) ctx tree [] defs [i] stk newstk _ _ _
-      Hseen Hf eq_refl eq_refl eq_refl).
-    assumption.
+    apply wf_lift_rtree_rec' with (fuel := length defs).
+    - repeat split; repeat constructor; crush.
+    - assumption.
   Qed.
 
   Lemma wf_lift_rtree_aux :
-    forall tree stk newstk ctx d newd,
-    d = length stk ->
-    newd = length newstk ->
-    wf_rtree_aux (stk ++ ctx) tree ->
-    wf_rtree_aux ((stk ++ newstk) ++ ctx) (lift_rtree_rec d newd tree).
+    forall tree stk newstk ctx,
+    let d := length stk in
+    let newd := length newstk in
+    wf_rtree (stk ++ ctx) tree ->
+    wf_rtree ((stk ++ newstk) ++ ctx) (lift_rtree_rec d newd tree).
   Proof.
-    intros tree stk.
-    induction stk, tree using t_ind'; intros newstk ctx d newd Hd Hnewd Hwf;
+    intros tree stk newstk ctx.
+    induction stk, tree using t_ind'; intros ? ? Hwf;
     inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (length stk <=? i) eqn:?.
-      + apply leb_complete in Heqb.
-        unshelve econstructor.
-        { clear Hj. repeat rewrite app_length.
-          rewrite app_length in Hi.
-          rewrite Nat.add_shuffle0.
-          apply plus_lt_compat_r. assumption. }
-        destruct (Nat.le_exists_sub _ _ Heqb) as [i' [H _]]; subst.
+    - destruct (d <=? i) eqn:?.
+      + econstructor.
+        destruct (Nat.le_exists_sub d i ltac:(crush)) as [i' [-> _]].
+        assert (i' < length ctx) as Hi' by (clear Hj; crush).
         gen_safe_proof.
-        assert (i' < length ctx) as Hi'.
-        { clear Hj. rewrite app_length in Hi. rewrite plus_comm in Hi.
-          apply plus_lt_reg_l in Hi. assumption. }
-        rewrite (Nat.add_comm i' (length stk)). rewrite <- Nat.add_assoc.
+        rewrite (Nat.add_comm i' d). rewrite <- Nat.add_assoc.
         rewrite app_assoc_reverse.
         intros.
-        unshelve erewrite safe_nth_app2.
-        { rewrite app_length. rewrite plus_comm. auto with arith. }
-        unshelve erewrite safe_nth_app2'.
-        { assumption. }
-        unshelve erewrite safe_nth_app2' in Hj; assumption.
-      + assert (i < length stk).
-        { now apply leb_complete_conv. }
-        clear Heqb.
-        unshelve econstructor.
-        { rewrite app_assoc_reverse. rewrite app_length.
-          now apply Nat.lt_lt_add_r. }
-        unshelve erewrite safe_nth_app1.
-        { rewrite app_length. now apply lt_plus_trans. }
-        unshelve erewrite safe_nth_app1.
-        { assumption. }
-        unshelve erewrite safe_nth_app1 in Hj.
-        { assumption. }
-        assumption.
+        erewrite safe_nth_app2 with (l1 := stk).
+        erewrite safe_nth_app2' with (l1 := newstk).
+        erewrite safe_nth_app2' with (l1 := stk) in Hj.
+        eassumption.
+      + econstructor.
+        erewrite safe_nth_app1.
+        erewrite safe_nth_app1.
+        erewrite safe_nth_app1 in Hj.
+        eassumption.
   - constructor.
     apply Forall_map.
     apply Forall_Impl with (1 := H2).
@@ -505,6 +498,7 @@ Section Rtree.
     + apply Foralli_map.
       apply Foralli_impl with (2 := H5).
       intros. apply wf_lift_rtree_rec; assumption.
+  Unshelve. all: try crush. clear Hj; crush.
   Qed.
 
   Definition subst_rtree_rec_body (F : nat -> list t -> t -> t)
@@ -523,6 +517,82 @@ Section Rtree.
   Fixpoint subst_rtree_rec (depth : nat) (sub : list t) (tree : t) {struct tree} : t :=
     subst_rtree_rec_body subst_rtree_rec depth sub tree.
   Definition subst_rtree sub tree := (subst_rtree_rec 0 sub tree).
+
+  Lemma wf_subst_rtree_rec' :
+    forall fuel defs seen,
+    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
+    forall ctx tree stk stk' sub,
+    let d := length stk in
+    let d' := length stk' in
+    let dsub := length sub in
+    wf_rtree_rec (stk' ++ dsub :: ctx) defs seen stk tree ->
+    let F := subst_rtree_rec (d + S d') sub in
+      wf_rtree_rec (stk' ++ dsub :: ctx) defs seen stk (F tree).
+  Proof.
+    intros fuel defs seen Hrec.
+    pattern seen. refine (seen_rect (length defs) _ _ fuel seen Hrec); clear.
+    intros seen REC ctx tree stk stk' sub.
+    induction stk, tree using t_ind'; intros ? ? ? Hwf;
+    inversion Hwf; subst; clear Hwf; simpl in *.
+    - destruct (d + S d' ?= i) eqn:?.
+      + econstructor. fold lift_rtree_rec.
+        erewrite safe_nth_map.
+
+  Fixpoint wf_subst_rtree_rec' (f : nat) :
+    forall ctx tree stk sub defs seen stk' d d',
+    NoDup seen /\ Forall (fun x => x < length defs) seen ->
+    f + length seen >= length defs ->
+    d = length stk ->
+    d' = length stk' ->
+    wf_rtree_rec (stk' ++ ctx) defs seen stk tree ->
+    Foralli (fun j => wf_rtree_rec (j :: ctx) defs seen stk) sub ->
+    let F := subst_rtree_rec (d + S d') sub in
+    wf_rtree_rec (stk' ++ ctx) defs seen stk (F tree).
+  Proof.
+    intros ctx tree stk.
+    induction stk, tree using t_ind'; intros sub defs' seen stk' d d' Hseen Hf Hd Hd' Hwf Hwfsub;
+    inversion Hwf; subst; clear Hwf; simpl in *.
+    - destruct (length stk + S (length stk') ?= i) eqn:?.
+      + econstructor. erewrite safe_nth_map. fold lift_rtree_rec.
+        pose proof (wf_lift_rtree_rec').
+        assert (j < length sub) as Hj by admit.
+        specialize (fun fuel Hrec => H fuel defs' seen Hrec ctx (safe_nth sub (j; Hj))).
+        specialize (fun fuel Hrec => H fuel Hrec (j :: stk) [] stk').
+        simpl in *.
+        apply H.
+      + apply nat_compare_lt in Heqc. econstructor. omega.
+      + econstructor. assumption.
+    - assert (length stk + S (length stk') ?= length stk = Gt) as ->.
+      { apply nat_compare_gt. omega. }
+      unshelve econstructor 2; auto.
+      + now rewrite map_length.
+      + gen_safe_proof. intros.
+        unshelve erewrite safe_nth_map.
+        { assumption. }
+        destruct f.
+        { exfalso. clear H5 Hs. revert j Hj seen Hseen Hf H4; clear; simpl; intros.
+          destruct Hseen. apply H4. apply NoDupFull_In with (M := length defs'); auto. }
+        assert (f + length (j :: seen) >= length defs') as Hf'.
+        { simpl. omega. }
+        assert (NoDup (j :: seen) /\ Forall (fun x => x < length defs') (j :: seen)) as Hseen'.
+        { destruct Hseen; split; simpl; constructor; auto. }
+        specialize (wf_subst_rtree_rec' f ctx (safe_nth defs' (j; Hj)) []
+          sub defs' (j :: seen) stk' _ _ Hseen' Hf' eq_refl eq_refl).
+        apply wf_subst_rtree_rec'. assumption.
+    - constructor.
+    - unshelve econstructor.
+      { now rewrite map_length. }
+      unshelve erewrite safe_nth_map.
+      { assumption. }
+      match goal with
+      | H : Forall ?P ?l |- _ => pose proof (iff_and (Forall_forall P l)) as Htmp
+      end.
+      destruct Htmp as [Htmp _].
+      specialize (Htmp H); clear H.
+      specialize (fun x H => Htmp x H sub defs' seen stk' _ _ Hseen Hf eq_refl eq_refl).
+      apply Htmp; trivial.
+      apply safe_nth_In.
+  Qed.
 
   Lemma wf_subst_rtree_rec : forall tree nb_recs depth J sub,
     depth = length nb_recs -> J = length sub ->
