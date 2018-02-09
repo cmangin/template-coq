@@ -2,6 +2,8 @@ Require Import List Program Arith Omega.
 
 (** ========== Common library ========== *)
 
+Ltac inv H := inversion H; subst; clear H.
+
 (** === Indexed Forall === *)
 
 (* Same as [Forall], but depending on the position in the list. *)
@@ -18,8 +20,7 @@ Lemma Forall_app {A} (P : A -> Prop) (l1 l2 : list A) :
 Proof.
   induction l1; simpl; intros.
   - easy.
-  - inversion H; subst.
-    destruct (IHl1 H3).
+  - inv H. destruct (IHl1 H3).
     now repeat constructor.
 Qed.
 
@@ -47,8 +48,8 @@ Lemma Forall_Impl {A : Type} {P Q : A -> Prop} {l : list A} :
   Forall P l -> Forall (fun t => P t -> Q t) l -> Forall Q l.
 Proof.
   induction 1; constructor.
-  - inversion H1; subst. auto.
-  - inversion H1; subst; auto.
+  - inv H1; auto.
+  - inv H1; auto.
 Qed.
 
 Lemma Foralli_map {A B : Type} {P : nat -> B -> Prop} {f : A -> B} {l : list A} :
@@ -60,16 +61,22 @@ Proof.
 Qed.
 
 Lemma Foralli_aux_impl {A : Type} (P Q : nat -> A -> Prop) {l : list A} {n : nat} :
-(forall i a, i < n + length l -> P i a -> Q i a) -> Foralli_aux P n l -> Foralli_aux Q n l.
+(forall i a, i < n + length l -> In a l -> P i a -> Q i a) -> Foralli_aux P n l -> Foralli_aux Q n l.
 Proof.
   induction 2; constructor.
-  - apply H; simpl. omega. assumption.
+  - apply H; simpl.
+    + omega.
+    + now left.
+    + assumption.
   - apply IHForalli_aux. intros.
-    apply H. simpl. omega. assumption.
+    apply H.
+    + simpl. omega.
+    + now right.
+    + assumption.
 Qed.
 
 Lemma Foralli_impl {A : Type} (P Q : nat -> A -> Prop) {l : list A} :
-(forall i a, i < length l -> P i a -> Q i a) -> Foralli P l -> Foralli Q l.
+(forall i a, i < length l -> In a l -> P i a -> Q i a) -> Foralli P l -> Foralli Q l.
 Proof.
   rewrite <- (plus_O_n (length l)).
   apply Foralli_aux_impl.
@@ -212,9 +219,8 @@ Lemma SortedNoDup_seq : forall l, StronglySorted gt l ->
   length l >= M -> l = rseq M.
 Proof.
   induction 1; intros; simpl in *.
-  - inversion H1; now subst.
-  - inversion H1; subst; clear H1; simpl in *.
-    inversion H2; subst; clear H2; simpl in *.
+  - now inv H1.
+  - inv H1; inv H2.
     specialize (fun H => IHStronglySorted (length l) ltac:(assumption) H (le_n _)).
     assert (l = rseq (length l)) as Hl.
     { apply IHStronglySorted.
@@ -261,7 +267,7 @@ Lemma StronglySortedNoDup_ge_gt :
 Proof.
   induction 1; intros.
   - constructor.
-  - inversion H1; subst; clear H1. specialize (IHStronglySorted H5).
+  - inv H1. specialize (IHStronglySorted H5).
     constructor.
     + assumption.
     + apply Forall_forall; intros.
@@ -331,8 +337,14 @@ Ltac make_one_simpl :=
   | H : _ <=? _ = false |- _ => apply leb_complete_conv in H
   | |- _ <=? _ = true => apply leb_correct
   | |- _ <=? _ = false => apply leb_correct_conv
+  | |- _ ?= _ = Eq => apply Nat.compare_eq_iff
+  | |- _ ?= _ = Lt => apply Nat.compare_lt_iff
+  | |- _ ?= _ = Gt => apply Nat.compare_gt_iff
+  | H : _ ?= _ = Eq |- _ => apply Nat.compare_eq in H
+  | H : _ ?= _ = Lt |- _ => apply Nat.compare_lt_iff in H
+  | H : _ ?= _ = Gt |- _ => apply Nat.compare_gt_iff in H
   end.
-Ltac crush := try assumption; abstract (repeat (try assumption; make_one_simpl); auto; omega).
+Ltac crush := repeat (try assumption; make_one_simpl; simpl in *); auto; omega.
 
 (** Regular trees. *)
 
@@ -347,7 +359,7 @@ Section Rtree.
   Fixpoint t_ind' (P : list nat -> t -> Prop)
     (fParam : forall stk i j, P stk (rParam i j))
     (fNode : forall stk x sons, Forall (P stk) sons -> P stk (rNode x sons))
-    (fRec : forall stk j defs, Forall (P (j :: stk)) defs -> P stk (rRec j defs))
+    (fRec : forall stk j defs, Forall (P (length defs :: stk)) defs -> P stk (rRec j defs))
       (stk : list nat) (tree : t) : P stk tree :=
     let REC := t_ind' P fParam fNode fRec in
     match tree with
@@ -360,11 +372,26 @@ Section Rtree.
     | rRec j defs => fRec stk j defs ((fix aux l : Forall _ l :=
         match l with
         | [] => Forall_nil _
-        | hd :: tl => Forall_cons hd (REC (j :: stk) hd) (aux tl)
+        | hd :: tl => Forall_cons hd (REC (length defs :: stk) hd) (aux tl)
         end) defs)
     end.
 
   (** Invariants about this structure. *)
+
+  (* Indices are well-scoped. *)
+  (* Consider [wf_rtree_idx stk tree].
+     The tree [tree] has free variables described by [stk]. *)
+  Inductive wf_rtree_idx : forall (stk : list nat), t -> Prop :=
+  | wfrParam : forall stk i j
+      (Hi : i < length stk) (Hj : j < safe_nth stk (i ; Hi)),
+      wf_rtree_idx stk (rParam i j)
+  | wfrNode : forall stk x sons,
+      Forall (wf_rtree_idx stk) sons ->
+      wf_rtree_idx stk (rNode x sons)
+  | wfrRec : forall stk j defs,
+      j < length defs -> Forall (wf_rtree_idx (length defs :: stk)) defs ->
+      wf_rtree_idx stk (rRec j defs).
+
   (* Recs are productive. *)
   (* Consider [wf_rtree_rec ctx defs seen stk tree].
      The tree [rRec j defs] is closed under [ctx].
@@ -377,24 +404,21 @@ Section Rtree.
       wf_rtree_rec ctx defs seen stk (rParam i j)
   | wrrNode : forall seen stk x sons, wf_rtree_rec ctx defs seen stk (rNode x sons)
   | wrrRec : forall seen stk j loc_defs (Hj : j < length loc_defs),
-      wf_rtree_rec ctx defs seen (j :: stk) (safe_nth loc_defs (j ; Hj)) ->
+      wf_rtree_rec ctx defs seen (length loc_defs :: stk) (safe_nth loc_defs (j ; Hj)) ->
       wf_rtree_rec ctx defs seen stk (rRec j loc_defs).
 
-  (* Indices are within range and Rec nodes are well-formed. *)
-  (* Consider [wf_rtree stk tree].
-     The tree [tree] has free variables described by [stk]. *)
-  Inductive wf_rtree : forall (stk : list nat), t -> Prop :=
-  | wfrParam : forall stk i j
-      (Hi : i < length stk) (Hj : j < safe_nth stk (i ; Hi)),
-      wf_rtree stk (rParam i j)
-  | wfrNode : forall stk x sons,
-      Forall (wf_rtree stk) sons ->
-      wf_rtree stk (rNode x sons)
-  | wfrRec : forall stk j defs,
-      j < length defs -> Forall (wf_rtree (j :: stk)) defs ->
+  Inductive wf_rtree_rec' : forall (stk : list nat), t -> Prop :=
+  | wrr'Param : forall stk i j, wf_rtree_rec' stk (rParam i j)
+  | wrr'Node : forall stk x sons,
+      Forall (wf_rtree_rec' stk) sons ->
+      wf_rtree_rec' stk (rNode x sons)
+  | wrr'Rec : forall stk j defs,
+      j < length defs -> Forall (wf_rtree_rec' (length defs :: stk)) defs ->
       Foralli (fun i => wf_rtree_rec stk defs [i] []) defs ->
-      wf_rtree stk (rRec j defs).
-  Definition wf_rtree_closed tree := (wf_rtree [] tree).
+      wf_rtree_rec' stk (rRec j defs).
+
+  Definition wf_rtree (stk : list nat) (tree : t) : Prop :=
+    wf_rtree_idx stk tree /\ wf_rtree_rec' stk tree.
 
   (** Lifting and substitution. *)
   Definition lift_rtree_rec_body (F : nat -> nat -> t -> t)
@@ -409,96 +433,143 @@ Section Rtree.
     lift_rtree_rec_body lift_rtree_rec depth n tree.
   Definition lift_rtree n tree := (lift_rtree_rec 0 n tree).
 
+  (* Lifting preserves scoping of indices. *)
+  Lemma wf_lift_rtree_idx :
+    forall ctx newstk (newd := length newstk) tree stk (d := length stk),
+      wf_rtree_idx (stk ++ ctx) tree ->
+      wf_rtree_idx ((stk ++ newstk) ++ ctx) (lift_rtree_rec d newd tree).
+  Proof.
+    intros ctx newstk newd tree stk.
+    induction stk, tree using t_ind'; intros d Hidx;
+    inv Hidx; simpl in *.
+    - destruct (Nat.leb_spec d i); econstructor.
+      + destruct (Nat.le_exists_sub d i ltac:(crush)) as [i' [-> _]].
+        assert (i' < length ctx) as Hi' by (clear Hj; crush).
+        gen_safe_proof.
+        replace (i' + d + newd) with (length (stk ++ newstk) + i') by crush.
+        intros. erewrite safe_nth_app2.
+        subst d. erewrite safe_nth_app2' in Hj.
+        eassumption.
+      + gen_safe_proof.
+        rewrite app_assoc_reverse.
+        intros. erewrite safe_nth_app1.
+        erewrite safe_nth_app1 in Hj.
+        eassumption.
+    - constructor. apply Forall_map.
+      apply Forall_Impl with (1 := H2) (2 := H).
+    - constructor.
+      + crush.
+      + apply Forall_map. rewrite map_length.
+        apply Forall_Impl with (1 := H4) (2 := H).
+    Unshelve. all: try crush. clear Hj; crush.
+  Qed.
 
-  Lemma wf_lift_rtree_rec' :
-    forall fuel defs seen,
+  (* Lifting preserves the productivity of a particular Rec node. *)
+  Lemma wf_lift_rtree_rec :
+    forall fuel defs (ddefs := length defs) seen,
     NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
-    forall ctx tree stk stk' newstk,
-    let d := length stk in
-    let d' := length stk' in
-    let newd := length newstk in
+    forall ctx stk' (d' := length stk'),
+    Forall (wf_rtree_idx (ddefs :: stk' ++ ctx)) defs ->
+    forall newstk (newd := length newstk),
+    forall tree stk (d := length stk),
+    wf_rtree_idx (stk ++ ddefs :: stk' ++ ctx) tree ->
     wf_rtree_rec (stk' ++ ctx) defs seen stk tree ->
     let F := lift_rtree_rec (d + S d') newd in
     let F' := lift_rtree_rec (S d') newd in
       wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree).
   Proof.
-    intros fuel defs seen Hrec.
-    pattern seen. refine (seen_rect (length defs) _ _ fuel seen Hrec); clear.
-    intros seen REC ctx tree stk stk' newstk.
-    induction stk, tree using t_ind'; intros ? ? ? Hwf;
-    inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (d + S d' <=? i) eqn:?.
-      + econstructor; crush.
-      + econstructor; crush.
+    intros fuel defs ddefs seen Hrec ctk stk' d' Hidx_defs newstk newd.
+    pattern seen. refine (seen_rect ddefs _ _ fuel seen Hrec); clear seen Hrec;
+    intros seen REC. intros tree stk.
+    induction stk, tree using t_ind';
+    intros d Hidx_tree Hwf_tree F F';
+    inv Hidx_tree; inv Hwf_tree; unfold F; simpl in *.
+    - destruct (Nat.leb_spec (d + S d') i).
+      + constructor. crush.
+      + constructor. crush.
     - assert (d + S d' <=? length stk = false) as -> by crush.
       econstructor 2; trivial.
       erewrite safe_nth_map.
-      apply REC; eassumption.
+      apply REC; try eassumption.
+      apply Forall_In with (1 := Hidx_defs).
+      apply safe_nth_In.
     - constructor.
     - rename defs0 into locdefs.
       econstructor.
       erewrite safe_nth_map.
       eapply Forall_forall' in H.
-      + apply H; eassumption.
+      + rewrite map_length. apply H; try eassumption.
+        apply Forall_In with (1 := H4). apply safe_nth_In.
       + apply safe_nth_In.
     Unshelve. all: crush.
   Qed.
 
-  Theorem wf_lift_rtree_rec :
-    forall ctx defs tree stk newstk i,
-    i < length defs ->
-    wf_rtree_rec (stk ++ ctx) defs [i] [] tree ->
-    let F := lift_rtree_rec (S (length stk)) (length newstk) in
-    wf_rtree_rec ((stk ++ newstk) ++ ctx) (map F defs) [i] [] (F tree).
+  (* Lifting preserves the productivity of Rec nodes. *)
+  Lemma wf_lift_rtree_rec' :
+    forall ctx newstk (newd := length newstk) tree stk (d := length stk),
+      wf_rtree_idx (stk ++ ctx) tree ->
+      wf_rtree_rec' (stk ++ ctx) tree ->
+      wf_rtree_rec' ((stk ++ newstk) ++ ctx) (lift_rtree_rec d newd tree).
   Proof.
-    intros.
-    apply wf_lift_rtree_rec' with (fuel := length defs).
-    - repeat split; repeat constructor; crush.
-    - assumption.
+    intros ctx newstk newd tree stk.
+    induction stk, tree using t_ind'; intros d Hidx Hwf;
+    inv Hidx; inv Hwf; simpl in *.
+    - destruct (Nat.leb_spec d i); constructor.
+    - constructor. apply Forall_map.
+      apply Forall_forall; intros.
+      apply Forall_forall' with (2 := H0) in H.
+      apply Forall_forall' with (2 := H0) in H2.
+      apply Forall_forall' with (2 := H0) in H3.
+      auto.
+    - constructor.
+      + now rewrite map_length.
+      + rewrite map_length. apply Forall_map.
+        apply Forall_forall; intros.
+        apply Forall_forall with (2 := H0) in H.
+        apply Forall_forall with (2 := H0) in H4.
+        apply Forall_forall with (2 := H0) in H6.
+        auto.
+      + apply Foralli_map.
+        apply Foralli_impl with (2 := H7); intros.
+        apply wf_lift_rtree_rec with (fuel := length defs); trivial.
+        * repeat split; repeat constructor; crush.
+        * apply Forall_In with (1 := H4). assumption.
   Qed.
 
-  Lemma wf_lift_rtree_aux :
-    forall tree stk newstk ctx,
-    let d := length stk in
-    let newd := length newstk in
+  Theorem wf_lift_rtree :
+    forall ctx newstk (newd := length newstk) tree stk (d := length stk),
     wf_rtree (stk ++ ctx) tree ->
     wf_rtree ((stk ++ newstk) ++ ctx) (lift_rtree_rec d newd tree).
   Proof.
-    intros tree stk newstk ctx.
-    induction stk, tree using t_ind'; intros ? ? Hwf;
-    inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (d <=? i) eqn:?.
-      + econstructor.
-        destruct (Nat.le_exists_sub d i ltac:(crush)) as [i' [-> _]].
-        assert (i' < length ctx) as Hi' by (clear Hj; crush).
-        gen_safe_proof.
-        rewrite (Nat.add_comm i' d). rewrite <- Nat.add_assoc.
-        rewrite app_assoc_reverse.
-        intros.
-        erewrite safe_nth_app2 with (l1 := stk).
-        erewrite safe_nth_app2' with (l1 := newstk).
-        erewrite safe_nth_app2' with (l1 := stk) in Hj.
-        eassumption.
-      + econstructor.
-        erewrite safe_nth_app1.
-        erewrite safe_nth_app1.
-        erewrite safe_nth_app1 in Hj.
-        eassumption.
-  - constructor.
-    apply Forall_map.
-    apply Forall_Impl with (1 := H2).
-    apply Forall_Impl with (1 := H).
-    apply Forall_forall. auto.
-  - set (F := lift_rtree_rec (S (length stk)) (length newstk)) in *.
-    constructor.
-    + now rewrite map_length.
-    + apply Forall_map. apply Forall_Impl with (1 := H4).
-      apply Forall_Impl with (1 := H). apply Forall_forall.
-      intros. now apply H1.
-    + apply Foralli_map.
-      apply Foralli_impl with (2 := H5).
-      intros. apply wf_lift_rtree_rec; assumption.
-  Unshelve. all: try crush. clear Hj; crush.
+    intros ctx newstk newd tree stk d [Hidx Hwf].
+    split.
+    - now apply wf_lift_rtree_idx.
+    - now apply wf_lift_rtree_rec'.
+  Qed.
+
+  Lemma wf_rtree_rec_deep :
+    forall defs (ddefs := length defs) seen ctx stk' (d' := length stk')
+      stk'' (d'' := length stk''),
+    Forall (wf_rtree_idx (ddefs :: stk' ++ ctx)) defs ->
+    forall tree stk (d := length stk),
+    wf_rtree_idx (stk ++ ctx) tree ->
+    wf_rtree_rec (stk' ++ ctx) defs seen (stk ++ stk'') (lift_rtree_rec d (d'' + S d') tree).
+  Proof.
+    intros defs ddefs seen ctx stk' d' stk'' d'' Hidx_defs.
+    intros tree stk.
+    induction stk, tree using t_ind'; intros d Hidx;
+    inv Hidx; unfold lift_rtree; simpl in *.
+    - destruct (Nat.leb_spec d i); constructor; crush.
+    - constructor.
+    - rename defs0 into locdefs.
+      econstructor. erewrite safe_nth_map.
+      gen_safe_proof. rewrite map_length.
+      intros. eapply Forall_forall' in H.
+      + apply H. eapply Forall_In.
+        * eassumption.
+        * apply safe_nth_In.
+      + apply safe_nth_In.
+    Unshelve. all: crush.
   Qed.
 
   Definition subst_rtree_rec_body (F : nat -> list t -> t -> t)
@@ -518,87 +589,105 @@ Section Rtree.
     subst_rtree_rec_body subst_rtree_rec depth sub tree.
   Definition subst_rtree sub tree := (subst_rtree_rec 0 sub tree).
 
-  Lemma wf_subst_rtree_rec' :
-    forall fuel defs seen,
-    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
-    forall ctx tree stk stk' sub,
-    let d := length stk in
-    let d' := length stk' in
-    let dsub := length sub in
-    wf_rtree_rec (stk' ++ dsub :: ctx) defs seen stk tree ->
-    let F := subst_rtree_rec (d + S d') sub in
-      wf_rtree_rec (stk' ++ dsub :: ctx) defs seen stk (F tree).
+  (* Substitution preserves scoping of indices. *)
+  Lemma wf_subst_rtree_idx :
+    forall ctx sub (dsub := length sub),
+    Forall (wf_rtree_idx (dsub :: ctx)) sub ->
+    forall tree stk (d := length stk),
+      wf_rtree_idx (stk ++ dsub :: ctx) tree ->
+      wf_rtree_idx (stk ++ ctx) (subst_rtree_rec d sub tree).
   Proof.
-    intros fuel defs seen Hrec.
-    pattern seen. refine (seen_rect (length defs) _ _ fuel seen Hrec); clear.
-    intros seen REC ctx tree stk stk' sub.
-    induction stk, tree using t_ind'; intros ? ? ? Hwf;
-    inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (d + S d' ?= i) eqn:?.
-      + econstructor. fold lift_rtree_rec.
-        erewrite safe_nth_map.
-
-  Fixpoint wf_subst_rtree_rec' (f : nat) :
-    forall ctx tree stk sub defs seen stk' d d',
-    NoDup seen /\ Forall (fun x => x < length defs) seen ->
-    f + length seen >= length defs ->
-    d = length stk ->
-    d' = length stk' ->
-    wf_rtree_rec (stk' ++ ctx) defs seen stk tree ->
-    Foralli (fun j => wf_rtree_rec (j :: ctx) defs seen stk) sub ->
-    let F := subst_rtree_rec (d + S d') sub in
-    wf_rtree_rec (stk' ++ ctx) defs seen stk (F tree).
-  Proof.
-    intros ctx tree stk.
-    induction stk, tree using t_ind'; intros sub defs' seen stk' d d' Hseen Hf Hd Hd' Hwf Hwfsub;
-    inversion Hwf; subst; clear Hwf; simpl in *.
-    - destruct (length stk + S (length stk') ?= i) eqn:?.
-      + econstructor. erewrite safe_nth_map. fold lift_rtree_rec.
-        pose proof (wf_lift_rtree_rec').
-        assert (j < length sub) as Hj by admit.
-        specialize (fun fuel Hrec => H fuel defs' seen Hrec ctx (safe_nth sub (j; Hj))).
-        specialize (fun fuel Hrec => H fuel Hrec (j :: stk) [] stk').
-        simpl in *.
-        apply H.
-      + apply nat_compare_lt in Heqc. econstructor. omega.
-      + econstructor. assumption.
-    - assert (length stk + S (length stk') ?= length stk = Gt) as ->.
-      { apply nat_compare_gt. omega. }
-      unshelve econstructor 2; auto.
-      + now rewrite map_length.
-      + gen_safe_proof. intros.
-        unshelve erewrite safe_nth_map.
-        { assumption. }
-        destruct f.
-        { exfalso. clear H5 Hs. revert j Hj seen Hseen Hf H4; clear; simpl; intros.
-          destruct Hseen. apply H4. apply NoDupFull_In with (M := length defs'); auto. }
-        assert (f + length (j :: seen) >= length defs') as Hf'.
-        { simpl. omega. }
-        assert (NoDup (j :: seen) /\ Forall (fun x => x < length defs') (j :: seen)) as Hseen'.
-        { destruct Hseen; split; simpl; constructor; auto. }
-        specialize (wf_subst_rtree_rec' f ctx (safe_nth defs' (j; Hj)) []
-          sub defs' (j :: seen) stk' _ _ Hseen' Hf' eq_refl eq_refl).
-        apply wf_subst_rtree_rec'. assumption.
+    intros ctx sub dsub Hidx_sub tree stk.
+    induction stk, tree using t_ind'; intros d Hidx;
+    inv Hidx; simpl in *.
+    - destruct (Nat.compare_spec d i).
+      + subst. subst d.
+        constructor; rewrite map_length.
+        * pose proof (safe_nth_app2' stk (dsub :: ctx) O).
+          simpl in H. erewrite H in Hj; clear H; crush.
+        * fold lift_rtree_rec. apply Forall_map.
+          apply Forall_impl with (2 := Hidx_sub); intros.
+          apply wf_lift_rtree_idx with (stk := [dsub]).
+          assumption.
+      + econstructor.
+        destruct (Nat.le_exists_sub d (pred i) ltac:(crush)) as [i' [Hi' _]].
+        assert (i = i' + S d) by crush.
+        gen_safe_proof. rewrite Hi'; clear Hi'; subst i.
+        intros. subst d. erewrite safe_nth_app2'.
+        revert Hi Hj.
+        replace (stk ++ dsub :: ctx) with ((stk ++ [dsub]) ++ ctx)
+        by (repeat rewrite app_assoc_reverse; reflexivity).
+        replace (i' + S (length stk)) with (i' + length (stk ++ [dsub]))
+        by crush.
+        intros. erewrite safe_nth_app2' in Hj.
+        eassumption.
+      + econstructor.
+        erewrite safe_nth_app1.
+        erewrite safe_nth_app1 in Hj.
+        eassumption.
+    - constructor. apply Forall_map.
+      apply Forall_Impl with (1 := H2) (2 := H).
     - constructor.
-    - unshelve econstructor.
-      { now rewrite map_length. }
-      unshelve erewrite safe_nth_map.
-      { assumption. }
-      match goal with
-      | H : Forall ?P ?l |- _ => pose proof (iff_and (Forall_forall P l)) as Htmp
-      end.
-      destruct Htmp as [Htmp _].
-      specialize (Htmp H); clear H.
-      specialize (fun x H => Htmp x H sub defs' seen stk' _ _ Hseen Hf eq_refl eq_refl).
-      apply Htmp; trivial.
-      apply safe_nth_In.
+      + crush.
+      + apply Forall_map. rewrite map_length.
+        apply Forall_Impl with (1 := H4) (2 := H).
+    Unshelve.
+      clear Hj; crush.
+      clear Hi; crush.
+      all: crush.
   Qed.
 
-  Lemma wf_subst_rtree_rec : forall tree nb_recs depth J sub,
-    depth = length nb_recs -> J = length sub ->
-    Forall (wf_rtree_aux (nb_recs ++ [J])) sub -> wf_rtree_aux (nb_recs ++ [J]) tree ->
-    wf_rtree_aux nb_recs (subst_rtree_rec depth sub tree).
-  Proof. Admitted.
+  Lemma wf_subst_rtree_rec :
+    forall fuel defs (ddefs := length defs) seen,
+    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
+    forall ctx sub (dsub := length sub),
+    Forall (wf_rtree_idx (dsub :: ctx)) sub ->
+    forall stk' (d' := length stk'),
+    Forall (wf_rtree_idx (ddefs :: stk' ++ dsub :: ctx)) defs ->
+    forall tree stk (d := length stk),
+    wf_rtree_idx (stk ++ ddefs :: stk' ++ dsub :: ctx) tree ->
+    wf_rtree_rec (stk' ++ dsub :: ctx) defs seen stk tree ->
+    let F := subst_rtree_rec (d + S d') sub in
+    let F' := subst_rtree_rec (S d') sub in
+      wf_rtree_rec (stk' ++ ctx) (map F' defs) seen stk (F tree).
+  Proof.
+    intros fuel defs ddefs seen Hrec ctx sub dsub Hidx_sub stk' d' Hidx_defs.
+    pattern seen. refine (seen_rect ddefs _ _ fuel seen Hrec); clear seen Hrec;
+    intros seen REC. intros tree stk.
+    induction stk, tree using t_ind';
+    intros d Hidx Hwf F F';
+    inv Hidx; inv Hwf; unfold F; simpl in *.
+    - destruct (Nat.compare_spec (d + S d') i).
+      + apply wf_rtree_rec_deep with (stk := []).
+        * apply Forall_map. apply Forall_impl with (2 := Hidx_defs).
+          intros. rewrite map_length.
+          apply wf_subst_rtree_idx with (stk := ddefs :: stk'); assumption.
+        * constructor; trivial.
+          subst i. revert Hi Hj.
+          replace (d + S d') with (length (stk ++ ddefs :: stk') + 0) by crush.
+          replace (stk ++ ddefs :: stk' ++ dsub :: ctx)
+          with ((stk ++ ddefs :: stk') ++ dsub :: ctx)
+          by (repeat rewrite app_assoc_reverse; reflexivity).
+          intros. erewrite safe_nth_app2 in Hj.
+          assumption.
+      + constructor. crush.
+      + constructor. assumption.
+    - assert (d + S d' ?= length stk = Gt) as -> by crush.
+      econstructor 2; trivial.
+      erewrite safe_nth_map.
+      apply REC; try eassumption.
+      apply Forall_In with (1 := Hidx_defs).
+      apply safe_nth_In.
+    - constructor.
+    - rename defs0 into locdefs.
+      econstructor.
+      erewrite safe_nth_map.
+      eapply Forall_forall' in H.
+      + rewrite map_length. apply H; try eassumption.
+        apply Forall_In with (1 := H4). apply safe_nth_In.
+      + apply safe_nth_In.
+    Unshelve. all: crush.
+  Qed.
 
   Theorem wf_subst_rtree : forall nb_recs j sub tree,
     Forall (wf_rtree_aux (j :: nb_recs)) sub -> wf_rtree_aux (j :: nb_recs) tree ->
