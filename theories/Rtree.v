@@ -547,6 +547,8 @@ Section Rtree.
     - now apply wf_lift_rtree_rec'.
   Qed.
 
+  (* A tree that has been lifted above a Rec is productive for this Rec, since
+     it does not have any free variable referring to this Rec. *)
   Lemma wf_rtree_rec_deep :
     forall defs (ddefs := length defs) seen ctx stk' (d' := length stk')
       stk'' (d'' := length stk''),
@@ -689,46 +691,148 @@ Section Rtree.
     Unshelve. all: crush.
   Qed.
 
-  Theorem wf_subst_rtree : forall nb_recs j sub tree,
-    Forall (wf_rtree_aux (j :: nb_recs)) sub -> wf_rtree_aux (j :: nb_recs) tree ->
-    wf_rtree_aux nb_recs (subst_rtree sub tree).
-  Admitted.
+  (* Substitution preserves the productivity of Rec nodes. *)
+  Lemma wf_subst_rtree_rec' :
+    forall ctx sub (dsub := length sub),
+      Forall (wf_rtree_idx (dsub :: ctx)) sub ->
+      Forall (wf_rtree_rec' (dsub :: ctx)) sub ->
+      Foralli (fun i => wf_rtree_rec ctx sub [i] []) sub ->
+      forall tree stk (d := length stk),
+      wf_rtree_idx (stk ++ dsub :: ctx) tree ->
+      wf_rtree_rec' (stk ++ dsub :: ctx) tree ->
+      wf_rtree_rec' (stk ++ ctx) (subst_rtree_rec d sub tree).
+  Proof.
+    intros ctx sub dsub Hidx_sub Hwf_sub Hwfi_sub tree stk.
+    induction stk, tree using t_ind'; intros d Hidx Hwf;
+    inv Hidx; inv Hwf; simpl in *.
+    - destruct (Nat.compare_spec d i); constructor; fold lift_rtree_rec.
+      + rewrite map_length. subst i.
+        subst d. erewrite safe_nth_app2' with (n := O) (l1 := stk) in Hj.
+        assumption.
+      + apply Forall_map. apply Forall_forall; intros.
+        apply Forall_forall' with (2 := H0) in Hidx_sub.
+        apply Forall_forall' with (2 := H0) in Hwf_sub.
+        rewrite map_length.
+        apply wf_lift_rtree_rec' with (stk := [dsub]); assumption.
+      + apply Foralli_map. apply Foralli_impl with (2 := Hwfi_sub); intros.
+        apply wf_lift_rtree_rec with (fuel := dsub) (stk' := []); trivial.
+        * repeat split; repeat constructor; crush.
+        * apply Forall_In with (1 := Hidx_sub). assumption.
+    - constructor. apply Forall_map.
+      apply Forall_forall; intros.
+      apply Forall_forall' with (2 := H0) in H.
+      apply Forall_forall' with (2 := H0) in H2.
+      apply Forall_forall' with (2 := H0) in H3.
+      auto.
+    - constructor.
+      + now rewrite map_length.
+      + rewrite map_length. apply Forall_map.
+        apply Forall_forall; intros.
+        apply Forall_forall with (2 := H0) in H.
+        apply Forall_forall with (2 := H0) in H4.
+        apply Forall_forall with (2 := H0) in H6.
+        auto.
+      + apply Foralli_map.
+        apply Foralli_impl with (2 := H7); intros.
+        apply wf_subst_rtree_rec with (fuel := length defs); trivial.
+        * repeat split; repeat constructor; crush.
+        * apply Forall_In with (1 := H4). assumption.
+    Unshelve. all: crush.
+  Qed.
 
-  (** Constructors. *)
-  Definition mk_rec_calls (i : nat) : list t :=
-    let fix aux (k : nat) (acc : list t) :=
-      match k with
-      | O => acc
-      | S k' => aux k' (rParam 0 k' :: acc)
-      end
-    in aux i [].
+  Theorem wf_subst_rtree :
+    forall ctx sub (dsub := length sub),
+    Forall (wf_rtree_idx (dsub :: ctx)) sub ->
+    Forall (wf_rtree_rec' (dsub :: ctx)) sub ->
+    Foralli (fun i => wf_rtree_rec ctx sub [i] []) sub ->
+    forall tree stk (d := length stk),
+    wf_rtree (stk ++ dsub :: ctx) tree ->
+    wf_rtree (stk ++ ctx) (subst_rtree_rec d sub tree).
+  Proof.
+    intros ctx sub dsub Hidx_sub Hwf_sub Hwfi_sub tree stk d [Hidx Hwf].
+    split.
+    - now apply wf_subst_rtree_idx.
+    - now apply wf_subst_rtree_rec'.
+  Qed.
 
-  Definition mk_node (x : X) (sons : list t) : t := rNode x sons.
+  (* Alternative formulation. *)
+  Corollary wf_subst_rtree' :
+    forall ctx sub (dsub := length sub) j,
+      wf_rtree ctx (rRec j sub) ->
+    forall tree stk (d := length stk),
+    wf_rtree (stk ++ dsub :: ctx) tree ->
+    wf_rtree (stk ++ ctx) (subst_rtree_rec d sub tree).
+  Proof.
+    intros ctx sub dsub j [Hidx_rec Hwf_rec].
+    inv Hidx_rec; inv Hwf_rec.
+    now apply wf_subst_rtree.
+  Qed.
 
-  Axiom R : t -> t -> Prop.
+  (* Even more specialized. *)
+  Corollary wf_subst_rtree'' :
+    forall ctx sub (dsub := length sub) j,
+      wf_rtree ctx (rRec j sub) ->
+    forall (Hj : j < dsub),
+      let tree := subst_rtree sub (safe_nth sub (j; Hj)) in
+      wf_rtree ctx tree.
+  Proof.
+    intros ctx sub dsub j Hwf Hj tree.
+    apply wf_subst_rtree' with (j := j) (stk := []).
+    - assumption.
+    - destruct Hwf as [Hidx Hwf]; inv Hidx; inv Hwf.
+      split.
+      + apply Forall_In with (1 := H3).
+        apply safe_nth_In.
+      + apply Forall_In with (1 := H5).
+        apply safe_nth_In.
+  Qed.
 
-  Program Fixpoint expand (tree : t) (tree_wf : wf_rtree tree) {measure tree (R)} : t :=
+  (* === Expansion === *)
+
+  Inductive rtree_bar : t -> Prop :=
+  | rtree_bar_param : forall i j, rtree_bar (rParam i j)
+  | rtree_bar_node : forall x sons, rtree_bar (rNode x sons)
+  | rtree_bar_rec : forall j defs,
+      (forall (Hj : j < length defs), rtree_bar (subst_rtree defs (safe_nth defs (j; Hj)))) ->
+      rtree_bar (rRec j defs).
+
+  Program Fixpoint expand_rec (tree : t)
+    (tree_wf : exists ctx, wf_rtree ctx tree) (bar : rtree_bar tree) {struct bar} : t :=
     match tree with
     | rRec j defs =>
-        let def := safe_nth defs (exist _ j _) in
+        let Hj : j < length defs := _ in
+        let def := safe_nth defs (j; Hj) in
         let tree' := subst_rtree defs def in
-        expand tree' _
+          expand_rec tree' _ _
     | t => t
     end.
 
+  (* Providing [Hj]. *)
   Next Obligation.
-    now inversion tree_wf.
-  Qed.
+    destruct H as [Hidx _].
+    inv Hidx.
+    assumption.
+  Defined.
 
+  (* Proving the recursive argument is well-formed. *)
   Next Obligation.
-    inversion tree_wf; subst.
-    eapply wf_subst_rtree.
-    - eassumption.
-    - apply safe_nth_Forall. assumption.
-  Qed.
+    rename tree_wf into ctx.
+    exists ctx. apply wf_subst_rtree''.
+    assumption.
+  Defined.
 
-  Next Obligation. Admitted.
+  (* Providing a termination certificate for the recursive argument. *)
+  Next Obligation.
+    simpl.
+    inv bar.
+    apply H1.
+  Defined.
 
-  Next Obligation. Admitted.
+  Definition expand (tree : t) (tree_wf : exists ctx, wf_rtree ctx tree) : t.
+  Proof.
+    refine (expand_rec tree tree_wf _).
+    destruct tree_wf as [ctx [Hidx Hwf]].
+    destruct tree; try constructor.
+  Admitted.
 
 End Rtree.
