@@ -87,22 +87,16 @@ Qed.
 
 Notation "( x ; y )" := (exist _ x y).
 
-Program Fixpoint safe_nth {A} (l : list A) (n : nat | n < length l) : A :=
-  match l with
-  | nil => !
-  | hd :: tl =>
-    match n with
-    | 0 => hd
-    | S n => safe_nth tl n
-    end
-  end.
-
-Next Obligation.
-  simpl in H. inversion H.
-Qed.
-Next Obligation.
-  simpl in H. auto with arith.
-Qed.
+Fixpoint safe_nth {A} (l : list A) (n : nat | n < length l) : A.
+Proof.
+  destruct l as [|hd tl].
+  - exfalso. destruct n as [? H].
+    inversion H.
+  - destruct n as [[|n'] H].
+    + exact hd.
+    + refine (safe_nth _ tl (n'; _)).
+      apply lt_S_n. assumption.
+Defined.
 
 (* Sometimes the [n < length l] proof is too big, we define this tactic for
    readability purposes. We do not actually care about the proof itself
@@ -306,22 +300,33 @@ Proof.
 Qed.
 
 (* Induction principle to recurse on a set of variables. *)
-Fixpoint seen_rect (MAX : nat) (P : list nat -> Type)
+Fixpoint seen_rect' (MAX : nat) (P : list nat -> Type)
   (f : forall (seen : list nat)
     (REC : forall (x : nat), x < MAX -> ~ In x seen -> P (x :: seen)), P seen)
   (fuel : nat) (seen : list nat)
-  (Hrec : NoDup seen /\ Forall (fun x => x < MAX) seen /\ MAX <= fuel + length seen)
+  (Hseen : NoDup seen /\ Forall (fun x => x < MAX) seen)
+  (Hfuel : MAX <= fuel + length seen)
     {struct fuel} : P seen.
 Proof.
   apply (f seen).
   intros x Hx HxIn.
-  destruct Hrec as [HseenNoDup [HseenMAX Hfuel]].
+  destruct Hseen as [HseenNoDup HseenMAX].
   destruct fuel as [|fuel].
   - exfalso. apply HxIn.
     apply NoDupFull_In with (M := MAX); assumption.
-  - apply (seen_rect MAX P f fuel (x :: seen)).
+  - apply (seen_rect' MAX P f fuel (x :: seen)).
     repeat split; repeat constructor; try assumption.
     simpl in *. rewrite <- plus_n_Sm. assumption.
+Qed.
+
+Definition seen_rect (MAX : nat) (P : list nat -> Type)
+  (f : forall (seen : list nat)
+    (REC : forall (x : nat), x < MAX -> ~ In x seen -> P (x :: seen)), P seen)
+  (seen : list nat)
+  (Hrec : NoDup seen /\ Forall (fun x => x < MAX) seen) : P seen.
+Proof.
+  apply seen_rect' with (MAX := MAX) (fuel := MAX); trivial.
+  apply le_plus_l.
 Qed.
 
 (** ========== Regular trees ========== *)
@@ -466,8 +471,8 @@ Section Rtree.
 
   (* Lifting preserves the productivity of a particular Rec node. *)
   Lemma wf_lift_rtree_rec :
-    forall fuel defs (ddefs := length defs) seen,
-    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
+    forall defs (ddefs := length defs) seen,
+    NoDup seen /\ Forall (fun x => x < length defs) seen ->
     forall ctx stk' (d' := length stk'),
     Forall (wf_rtree_idx (ddefs :: stk' ++ ctx)) defs ->
     forall newstk (newd := length newstk),
@@ -478,8 +483,8 @@ Section Rtree.
     let F' := lift_rtree_rec (S d') newd in
       wf_rtree_rec ((stk' ++ newstk) ++ ctx) (map F' defs) seen stk (F tree).
   Proof.
-    intros fuel defs ddefs seen Hrec ctk stk' d' Hidx_defs newstk newd.
-    pattern seen. refine (seen_rect ddefs _ _ fuel seen Hrec); clear seen Hrec;
+    intros defs ddefs seen Hrec ctk stk' d' Hidx_defs newstk newd.
+    pattern seen. refine (seen_rect ddefs _ _ seen Hrec); clear seen Hrec;
     intros seen REC. intros tree stk.
     induction stk, tree using t_ind';
     intros d Hidx_tree Hwf_tree F F';
@@ -531,7 +536,7 @@ Section Rtree.
         auto.
       + apply Foralli_map.
         apply Foralli_impl with (2 := H7); intros.
-        apply wf_lift_rtree_rec with (fuel := length defs); trivial.
+        apply wf_lift_rtree_rec; trivial.
         * repeat split; repeat constructor; crush.
         * apply Forall_In with (1 := H4). assumption.
   Qed.
@@ -640,8 +645,8 @@ Section Rtree.
   Qed.
 
   Lemma wf_subst_rtree_rec :
-    forall fuel defs (ddefs := length defs) seen,
-    NoDup seen /\ Forall (fun x => x < length defs) seen /\ length defs <= fuel + length seen ->
+    forall defs (ddefs := length defs) seen,
+    NoDup seen /\ Forall (fun x => x < length defs) seen ->
     forall ctx sub (dsub := length sub),
     Forall (wf_rtree_idx (dsub :: ctx)) sub ->
     forall stk' (d' := length stk'),
@@ -653,8 +658,8 @@ Section Rtree.
     let F' := subst_rtree_rec (S d') sub in
       wf_rtree_rec (stk' ++ ctx) (map F' defs) seen stk (F tree).
   Proof.
-    intros fuel defs ddefs seen Hrec ctx sub dsub Hidx_sub stk' d' Hidx_defs.
-    pattern seen. refine (seen_rect ddefs _ _ fuel seen Hrec); clear seen Hrec;
+    intros defs ddefs seen Hrec ctx sub dsub Hidx_sub stk' d' Hidx_defs.
+    pattern seen. refine (seen_rect ddefs _ _ seen Hrec); clear seen Hrec;
     intros seen REC. intros tree stk.
     induction stk, tree using t_ind';
     intros d Hidx Hwf F F';
@@ -715,7 +720,7 @@ Section Rtree.
         rewrite map_length.
         apply wf_lift_rtree_rec' with (stk := [dsub]); assumption.
       + apply Foralli_map. apply Foralli_impl with (2 := Hwfi_sub); intros.
-        apply wf_lift_rtree_rec with (fuel := dsub) (stk' := []); trivial.
+        apply wf_lift_rtree_rec with (stk' := []); trivial.
         * repeat split; repeat constructor; crush.
         * apply Forall_In with (1 := Hidx_sub). assumption.
     - constructor. apply Forall_map.
@@ -734,7 +739,7 @@ Section Rtree.
         auto.
       + apply Foralli_map.
         apply Foralli_impl with (2 := H7); intros.
-        apply wf_subst_rtree_rec with (fuel := length defs); trivial.
+        apply wf_subst_rtree_rec; trivial.
         * repeat split; repeat constructor; crush.
         * apply Forall_In with (1 := H4). assumption.
     Unshelve. all: crush.
@@ -831,8 +836,11 @@ Section Rtree.
   Definition expand (tree : t) (tree_wf : exists ctx, wf_rtree ctx tree) : t.
   Proof.
     refine (expand_rec tree tree_wf _).
-    destruct tree_wf as [ctx [Hidx Hwf]].
-    destruct tree; try constructor.
-  Admitted.
+    destruct tree; constructor.
+    intros.
+  Defined.
+
+  (* TODO Try to define an equivalent [expand'] which maintains a stack of
+     explicit substitutions, and use it to derive the termination certificate? *)
 
 End Rtree.
