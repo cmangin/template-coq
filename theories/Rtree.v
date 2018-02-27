@@ -53,6 +53,12 @@ Proof.
   - inv H1; auto.
 Qed.
 
+Lemma Forall_snoc {A : Type} {P : A -> Prop} (x : A) {l : list A} :
+  Forall P l -> P x -> Forall P (l ++ [x]).
+Proof.
+  induction 1; constructor; auto.
+Qed.
+
 Lemma Foralli_map {A B : Type} {P : nat -> B -> Prop} {f : A -> B} {l : list A} :
   Foralli (fun i x => P i (f x)) l ->
   Foralli P (map f l).
@@ -111,13 +117,48 @@ Ltac gen_safe_proof :=
         generalize H as Hs
   end.
 
-(* FIXME No need for [proof_irrelevance]. *)
-Lemma lt_irrelevance {n m : nat} (p q : n < m): p = q.
+Lemma le_n_irrelevant {n : nat} (p : n <= n) : p = le_n n.
 Proof.
-  apply proof_irrelevance.
+  enough (forall m (q : n <= m) (e : n = m), eq_ind _ _ p _ e = q -> p = le_n _).
+  { apply (H n p eq_refl eq_refl). }
+  intros m q.
+  destruct q; intros e.
+  - rewrite Eqdep_dec.UIP_refl_nat with n e. now intros.
+  - exfalso. subst. now elim Nat.nle_succ_diag_l with m.
 Qed.
 
-Ltac prove_lt_irrelevance := apply lt_irrelevance.
+Definition noConf_nat_S {n m : nat} : S n = S m -> n = m.
+Proof.
+  now inversion 1.
+Qed.
+
+Lemma noConf_nat_S_f_equal {n m : nat} (p : S n = S m) :
+  p = f_equal S (noConf_nat_S p).
+Proof.
+  apply UIP_nat.
+Qed.
+
+Fixpoint le_irrelevant {n m : nat} (p q : n <= m) {struct p} : p = q.
+Proof.
+  destruct p.
+  - symmetry. apply le_n_irrelevant.
+  - enough (forall m' (q' : n <= m') (e : S m = m'), eq_ind _ _ q _ e = q' -> le_S n m p = q).
+    { apply (H (S m) q eq_refl eq_refl). }
+    intros m' q'.
+    destruct q'; intros e.
+    + exfalso. subst. now elim Nat.nle_succ_diag_l with m.
+    + rewrite noConf_nat_S_f_equal with e.
+      generalize (noConf_nat_S e); clear e; intros e.
+      destruct e. simpl. intros ->.
+      f_equal. apply le_irrelevant.
+Qed.
+
+Lemma lt_irrelevant {n m : nat} (p q : n < m) : p = q.
+Proof.
+  apply le_irrelevant.
+Qed.
+
+Ltac prove_lt_irrelevance := apply lt_irrelevant.
 Ltac unify_lt_proofs :=
   repeat match goal with
   | H1 : ?x < ?y, H2 : ?x < ?y |- _ =>
@@ -1119,7 +1160,7 @@ Section Rtree.
       (forall (Hj : j < length defs), rtree_bar (subst_rtree defs (safe_nth defs (j; Hj)))) ->
       rtree_bar (rRec j defs).
 
-  Program Fixpoint expand_rec (tree : t) (Hwf : exists ctx, wf_rtree ctx [] tree)
+  Program Fixpoint expand_rec (tree : t) (Hctx : exists ctx, wf_rtree ctx [] tree)
     (bar : rtree_bar tree) {struct bar} : t :=
       match tree with
       | rRec j defs =>
@@ -1135,7 +1176,7 @@ Section Rtree.
   Defined.
 
   Next Obligation.
-    rename Hwf into ctx.
+    rename Hctx into ctx.
     exists ctx.
     now apply wf_subst_rtree''.
   Defined.
@@ -1149,10 +1190,12 @@ Section Rtree.
   Fixpoint wf_expand_rec (tree : t) (ctx : Context)
     (Hwf : wf_rtree ctx [] tree)
     (bar : rtree_bar tree) {struct bar} :
-    wf_rtree ctx [] (expand_rec tree (ex_intro _ ctx Hwf) bar).
+    forall Hctx,
+    wf_rtree ctx [] (expand_rec tree Hctx bar).
   Proof.
-    destruct bar; try assumption.
+    destruct bar; intros; try assumption.
     apply wf_expand_rec with (tree := subst_rtree _ _).
+    now apply wf_subst_rtree''.
   Qed.
 
   Theorem wf_bar (ctx : Context) (stk : Stack) (tree : t) :
@@ -1217,9 +1260,122 @@ Section Rtree.
   Defined.
 
   Theorem wf_expand (tree : t) (ctx : Context) (Hwf : wf_rtree ctx [] tree) :
-    wf_rtree ctx [] (expand tree (ex_intro _ ctx Hwf)).
+    forall Hctx,
+    wf_rtree ctx [] (expand tree Hctx).
   Proof.
-    apply wf_expand_rec.
+    intros.
+    now apply wf_expand_rec.
+  Qed.
+
+  Fixpoint expand_rec_notRec (tree : t) Hctx bar :
+    match expand_rec tree Hctx bar with
+    | rParam i j => True
+    | rNode x sons => True
+    | rRec j defs => False
+    end.
+  Proof.
+    destruct bar; try constructor.
+    apply expand_rec_notRec with (tree := subst_rtree _ _).
+  Qed.
+
+  (* What the user will see. *)
+
+  Definition wf_closed : t -> Prop := wf_rtree [] [].
+
+  Definition closed_expand (tree : t) (Hwf : wf_closed tree) : t :=
+    expand tree (ex_intro _ [] Hwf).
+
+  Lemma wf_closed_expand (tree : t) (Hwf : wf_closed tree) :
+    wf_closed (closed_expand tree Hwf).
+  Proof.
+    now apply wf_expand.
+  Qed.
+
+  Program Definition dest_node (tree : t) (Hwf : wf_closed tree) : X * list t :=
+    match closed_expand tree Hwf with
+    | rNode x sons => (x, sons)
+    | _ => !
+    end.
+
+  Next Obligation.
+    set (expand tree (ex_intro _ [] Hwf)) as res.
+    change (forall x sons, rNode x sons <> res) in H.
+    assert (wf_rtree [] [] res) as Hwfres by now apply wf_expand.
+    assert (match res with
+            | rParam i j => True
+            | rNode x sons => True
+            | rRec j defs => False
+            end) as HnotRec by apply expand_rec_notRec.
+    clearbody res. clear Hwf.
+    inv Hwfres.
+    - inversion Hi.
+    - inversion Hi.
+    - now eapply H.
+    - assumption.
+  Defined.
+
+  Definition mk_node (x : X) (sons : list t) := rNode x sons.
+
+  Lemma wf_mk_node (x : X) (sons : list t) :
+    forall ctx stk,
+    Forall (wf_rtree (Context_of_Stack stk ++ ctx) []) sons ->
+    wf_rtree ctx stk (mk_node x sons).
+  Proof.
+    intros. now constructor.
+  Qed.
+
+  Definition mk_rec_calls (i : nat) : list t :=
+    let fix aux j :=
+      match j with
+      | O => []
+      | S j => rParam 0 j :: aux j
+      end
+    in rev (aux i).
+
+  Lemma wf_mk_rec_calls (i : nat) :
+    forall ctx,
+    Forall (wf_rtree (i :: ctx) []) (mk_rec_calls i).
+  Proof.
+    intros.
+    enough (forall j, j <= i -> Forall (wf_rtree (i :: ctx) []) (mk_rec_calls j)).
+    { now apply H. }
+    induction j; intros Hj.
+    - constructor.
+    - apply Forall_snoc.
+      + apply IHj. crush.
+      + econstructor. crush.
+    Unshelve.
+      all: crush.
+  Qed.
+
+  Definition mk_rec (defs : list t) : list t :=
+    let fix aux j :=
+      match j with
+      | O => []
+      | S j => rRec j defs :: aux j
+      end
+    in rev (aux (length defs)).
+
+  Lemma wf_mk_rec (defs : list t) :
+    forall ctx stk,
+      Foralli (fun j => wf_rtree ctx ((defs, [j]) :: stk)) defs -> 
+      Forall (wf_rtree ctx stk) (mk_rec defs).
+  Proof.
+    intros.
+    unfold mk_rec.
+    enough (forall j, j <= length defs ->
+      Forall (wf_rtree ctx stk) (rev (
+        (fix aux j :=
+            match j with
+            | O => []
+            | S j => rRec j defs :: aux j
+            end) j))).
+    { now apply H0. }
+    induction j; intros Hj.
+    - constructor.
+    - apply Forall_snoc.
+      + apply IHj. crush.
+      + constructor; crush.
   Qed.
 
 End Rtree.
