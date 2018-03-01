@@ -618,7 +618,7 @@ Section Rtree.
   Definition Stack : Set := list (list t * list nat).
 
   (* We can convert a Stack to a Context simply by forgetting every information
-     except the number of mutally recursive definitions. *)
+     except the number of mutually recursive definitions. *)
   Definition Context_of_Stack : Stack -> Context := map (fun '(x, _) => length x).
   Hint Unfold Context_of_Stack : rtree.
 
@@ -1082,22 +1082,6 @@ Section Rtree.
     subst FS. erewrite subst_Stack_safe_nth. crush.
   Qed.
 
-(* Not needed?
-  Lemma wf_subst_rtree_deep :
-    forall sub ctx stk tree,
-    wf_rtree ctx stk tree ->
-    forall n (Hn : n < length stk)
-    (Hsub : Foralli (fun j => wf_rtree (Context_of_Stack (skipn (S n) stk) ++ ctx)
-      ((sub, [j]) :: stk)) sub)
-    (Hnsub : fst (safe_nth stk (n; Hn)) = sub),
-    let F := subst_rtree_rec n sub in
-    let FS := subst_Stack 0 sub in
-    wf_rtree ctx (FS (firstn n stk) ++ skipn (S n) stk) (F tree).
-  Proof.
-    induction 1 using wf_rtree_ind'; intros; subst F; simpl in *.
-  Admitted.
-*)
-
   Corollary wf_subst_rtree' :
     forall ctx sub (dsub := length sub)
     (Hsub : Foralli (fun j => wf_rtree ctx [(sub, [j])]) sub)
@@ -1377,5 +1361,48 @@ Section Rtree.
       + apply IHj. crush.
       + constructor; crush.
   Qed.
+
+  (* Proving that a given list of definitions is well-formed. *)
+  Definition seen_cond (MAX : nat) (seen : list nat) : Prop :=
+    NoDup seen /\ Forall (fun x => x < MAX) seen.
+  Definition seen_rect (MAX : nat) (P : list nat -> Type)
+  (f : forall (seen : list nat) (Hseen : seen_cond MAX seen)
+    (REC : forall (x : nat), x < MAX -> ~ In x seen -> P (x :: seen)), P seen)
+  (seen : list nat)
+  (Hrec : seen_cond MAX seen) : P seen.
+  Admitted.
+
+  Definition check_defs (defs : list t)
+    (Hdefs : exists ctx, Forall (wf_rtree (length defs :: ctx) []) defs)
+    (seen : list nat) (Hseen : seen_cond (length defs) seen)
+    (d : t) (Hd : In d defs) : bool.
+  Proof.
+    revert d Hd.
+    refine (seen_rect (length defs) _ _ seen Hseen); clear seen Hseen;
+    intros seen Hseen REC d Hd.
+    unshelve refine (match expand d _ as t return (expand d _ = t -> bool) with
+            | rParam O j => fun Heq => _
+            | _ => fun _ => true
+            end eq_refl).
+    { destruct Hdefs as [ctx Hdefs]. exists (length defs :: ctx).
+      apply Forall_In with (1 := Hdefs) (2 := Hd). }
+    clear n.
+    destruct (in_dec Nat.eq_dec j seen).
+    - exact false.
+    - assert (j < length defs) as Hj.
+      { destruct Hdefs as [ctx Hdefs].
+        assert (wf_rtree (length defs :: ctx) [] (rParam 0 j)).
+        { destruct Heq. apply wf_expand.
+          apply Forall_In with (1 := Hdefs) (2 := Hd). }
+        inv H; crush. }
+    refine (REC j Hj n (safe_nth defs (j; Hj)) _).
+    apply safe_nth_In.
+  Defined.
+
+  Lemma wf_check_defs :
+    forall defs ctx Hdefs seen Hseen d Hd,
+    check_defs defs (ex_intro _ ctx Hdefs) seen Hseen d Hd = true ->
+    wf_rtree ctx ([(defs, seen)]) d.
+  Proof. Admitted.
 
 End Rtree.
