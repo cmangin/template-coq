@@ -633,12 +633,125 @@ Inductive type_inddecls (Σ : global_context) (pars : context) (Γ : context) :
     (** TODO: check kelim*)
     type_inddecls Σ pars Γ (Build_one_inductive_body na ty kelim cstrs projs :: l).
 
-Definition type_inductive Σ inds :=
+(** Positivity. *)
+
+(* Utility functions that should be moved elsewhere. *)
+
+Definition fold_with_binders {A B : Type} (g : A -> A) (f : A -> B -> term -> B)
+  (n : A) (acc : B) (t : term) : B :=
+  match t with
+  | tRel _ | tVar _ | tMeta _ | tSort _
+  | tConst _ _ | tInd _ _ | tConstruct _ _ _ => acc
+  | tCast c _ t => f n (f n acc c) t
+  | tProd _ t c => f (g n) (f n acc t) c
+  | tLambda _ t c => f (g n) (f n acc t) c
+  | tLetIn _ b t c => f (g n) (f n (f n acc b) t) c
+  | tApp c l => fold_left (f n) l (f n acc c)
+  | tEvar _ l => fold_left (f n) l acc
+  | tCase _ p c bl => fold_left (fun acc br => f n acc (snd br)) bl (f n (f n acc p) c)
+  | tProj _ c => f n acc c
+  | tFix fl _ => let m := Nat.iter (List.length fl) g n in
+                 fold_left (fun acc def => f m (f n acc (dtype def)) (dbody def)) fl acc
+  | tCoFix fl _ => let m := Nat.iter (List.length fl) g n in
+                   fold_left (fun acc def => f m (f n acc (dtype def)) (dbody def)) fl acc
+  end.
+
+Fixpoint noccur_between_aux m n t {struct t} : bool :=
+  match t with
+  | tRel p => negb (Nat.leb n p && Nat.ltb p (n + m))
+  | _ => fold_with_binders S (fun n b t => b && noccur_between_aux m n t) n true t
+  end.
+Definition noccur_betweenb n m t : bool := noccur_between_aux m n t.
+Definition noccur_between n m t : Prop := is_true (noccur_betweenb n m t).
+
+Definition decompose_app (t : term) : term * list term :=
+  match t with
+  | tApp c l => (c, l)
+  | _ => (t, [])
+  end.
+
+(* (env, n, ntypes) *)
+Record ienv : Set := {
+  ienv_context : context;
+  ienv_n : nat;
+  ienv_ntypes : nat
+}.
+
+Definition ienv_push_var (Γ : ienv) (x : name) (t : term) : ienv :=
+  {| ienv_context := Γ.(ienv_context) ,, vass x t;
+     ienv_n := S Γ.(ienv_n);
+     ienv_ntypes := Γ.(ienv_ntypes) |}.
+
+(* This is a simplified version of [check_pos] in kernel/indtypes.ml as it
+   does not (yet) talk about the recursive trees nor non-uniform parameters. *)
+Inductive pos_arg (Σ : global_context) (Γ : ienv) : term -> Type :=
+| pos_arg_prod na b d :
+    noccur_between Γ.(ienv_n) Γ.(ienv_ntypes) b ->
+    pos_arg Σ (ienv_push_var Γ na b) d ->
+    pos_arg Σ Γ (tProd na b d)
+| pos_arg_rel t k largs :
+    Forall (noccur_between Γ.(ienv_n) Γ.(ienv_ntypes)) largs ->
+    decompose_app t = (tRel k, largs) ->
+    pos_arg Σ Γ t
+| pos_arg_ind_simple t i u largs :
+    Forall (noccur_between Γ.(ienv_n) Γ.(ienv_ntypes)) largs ->
+    decompose_app t = (tInd i u, largs) ->
+    pos_arg Σ Γ t
+| pos_arg_ind_nested t i u largs :
+  (* Nested inductive types are not handled yet. *)
+  (* It will introduce a cyclic dependency between the functions that check
+     positivity. *)
+  False ->
+  decompose_app t = (tInd i u, largs) ->
+  pos_arg Σ Γ t
+| pos_arg_default t x largs :
+  (* This is really a default case, as the preconditions are stronger than the
+     ones above. *)
+  noccur_between Γ.(ienv_n) Γ.(ienv_ntypes) x ->
+  Forall (noccur_between Γ.(ienv_n) Γ.(ienv_ntypes)) largs ->
+  decompose_app t = (x, largs) ->
+  pos_arg Σ Γ t.
+
+Inductive pos_constructor (Σ : global_context) (Γ : ienv) : term -> Type :=
+| pos_constructor_prod na b d :
+    pos_arg Σ Γ b ->
+    pos_constructor Σ (ienv_push_var Γ na b) d ->
+    pos_constructor Σ Γ (tProd na b d)
+| pos_constructor_res t hd largs :
+  (* We do not check the head of the returned type. *)
+  Forall (noccur_between Γ.(ienv_n) Γ.(ienv_ntypes)) largs ->
+  decompose_app t = (hd, largs) ->
+  pos_constructor Σ Γ t.
+
+Inductive pos_constructors (Σ : global_context) (Γ : ienv) :
+  list (ident * term * nat) -> Type :=
+| pos_cnstrs_nil : pos_constructors Σ Γ []
+| pos_cnstrs_cons id t n l :
+    pos_constructor Σ Γ t ->
+    pos_constructors Σ Γ l ->
+    pos_constructors Σ Γ ((id, t, n) :: l).
+
+Inductive pos_inddecls (Σ : global_context) (Γ : ienv) :
+  list one_inductive_body -> Type :=
+| pos_ind_nil : pos_inddecls Σ Γ []
+| pos_ind_cons na ty cstrs projs kelim l :
+    pos_constructors Σ Γ cstrs ->
+    pos_inddecls Σ Γ l ->
+    pos_inddecls Σ Γ (Build_one_inductive_body na ty kelim cstrs projs :: l).
+
+Definition init_ienv (inds : mutual_inductive_body) :=
+  (** FIXME: same as below *)
+  {| ienv_context := arities_context inds.(ind_bodies);
+     ienv_n := S inds.(ind_npars);
+     ienv_ntypes := List.length inds.(ind_bodies)
+  |}.
+
+Definition type_inductive Σ inds : Type :=
   (** FIXME: should be pars ++ arities w/o params *)
-  type_inddecls Σ [] (arities_context inds) inds.
+  type_inddecls Σ [] (arities_context inds.(ind_bodies)) inds.(ind_bodies) *
+  pos_inddecls Σ (init_ienv inds) inds.(ind_bodies).
 
-(** *** Typing of constant declarations *)
-
+  
 Definition type_constant_decl Σ d :=
   match d.(cst_body) with
   | Some trm => Σ ;;; [] |- trm : d.(cst_type)
@@ -648,7 +761,7 @@ Definition type_constant_decl Σ d :=
 Definition type_global_decl Σ decl :=
   match decl with  (* TODO universes *)
   | ConstantDecl id d => type_constant_decl Σ d
-  | InductiveDecl ind inds => type_inductive Σ inds.(ind_bodies)
+  | InductiveDecl ind inds => type_inductive Σ inds
   end.
 
 (** *** Typing of global environment
