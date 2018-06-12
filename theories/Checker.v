@@ -824,6 +824,93 @@ End Typecheck.
 
 Extract Constant infer_correct => "(fun f sigma ctx t ty -> assert false)".
 
+
+Section Indtypes.
+
+  Context `{F:Fuel}.
+
+  Inductive inductive_error :=
+  | IndTypeError (e : type_error)
+  | BadInductive (e : string).
+
+  Inductive IndCheck (A : Type) :=
+  | CorrectInd (a : A)
+  | IndError (e : inductive_error).
+  Global Arguments IndError {A} e.
+  Global Arguments CorrectInd {A} a.
+
+  Instance ind_check_monad : Monad IndCheck :=
+    {| ret A a := CorrectInd a ;
+       bind A B m f :=
+         match m with
+         | CorrectInd a => f a
+         | IndError e => IndError e
+         end
+    |}.
+
+  Instance ind_monad_exc : MonadExc inductive_error IndCheck :=
+  { raise A e := IndError e;
+    catch A m f :=
+      match m with
+      | CorrectInd a => m
+      | IndError t => f t
+      end
+  }.
+
+  Definition ind_wrap_error {A} (check : typing_result A) : IndCheck A :=
+    match check with
+    | Checked a => CorrectInd a
+    | TypeError e => IndError (IndTypeError e)
+    end.
+
+  Definition ind_check_wf_type Σ t :=
+    ind_wrap_error (infer_type Σ (infer Σ) [] t) ;; ret ().
+
+  Definition decompose_prod_n (n : nat) (ty : term) : option (list (name * term) * term) :=
+    let fix aux (n : nat) (acc : list (name * term)) (ty : term) :=
+      match n with
+      | O => Some (acc, ty)
+      | S n' =>
+        match ty with
+        | tProd na a ty' => aux n' ((na, a) :: acc) ty'
+        | _ => None
+        end
+     end
+   in aux n [] ty.
+
+  (* Check that the arities of the inductive types are well-formed. *)
+  (* Return the common list of parameters. *)
+  Definition infer_arities_inds (Σ : global_context) (ind_decl : minductive_decl) :
+    IndCheck (list (name * term)) :=
+    (* All arities are types. *)
+    List.fold_left (fun acc body => acc ;; ind_check_wf_type Σ body.(ind_type))
+      ind_decl.(ind_bodies) (ret ()) ;;
+    (* Try to get a list of parameters. *)
+    params <- (
+      one_type <-
+        match ind_decl.(ind_bodies) with
+        | [] => raise (BadInductive "A mutual inductive must have at least one inductive type")
+        | one_body :: _ => ret (one_body.(ind_type))
+        end ;;
+      match decompose_prod_n ind_decl.(ind_npars) one_type with
+      | None => raise (BadInductive "Not enough products")
+      | Some (params, _) => ret params
+      end
+    );;
+    (* Check for each type that it has the correct parameters. *)
+    List.fold_left (fun acc body =>
+      match decompose_prod_n ind_decl.(ind_npars) body.(ind_type) with
+      | None => raise (BadInductive "Not enough products")
+      | Some (params', _) => acc
+      end
+    ) ind_decl.(ind_bodies) (ret params).
+
+  Definition infer_inds (Σ : global_context) (ind_decl : minductive_decl) : IndCheck () :=
+    params <- infer_arities_inds Σ ind_decl ;;
+    ret ().
+
+End Indtypes.
+
 Instance default_fuel : Fuel := { fuel := 2 ^ 18 }.
 
 Fixpoint fresh id env : bool :=
@@ -838,6 +925,7 @@ Section Checker.
 
   Inductive env_error :=
   | IllFormedDecl (e : string) (e : type_error)
+  | IllFormedInd (e : string) (e : inductive_error)
   | AlreadyDeclared (id : string).
 
   Inductive EnvCheck (A : Type) :=
@@ -861,11 +949,20 @@ Section Checker.
     | TypeError e => EnvError (IllFormedDecl id e)
     end.
 
+  Definition wrap_error_ind {A} (id : string) (check : IndCheck A) : EnvCheck A :=
+    match check with
+    | CorrectInd a => CorrectDecl a
+    | IndError e => EnvError (IllFormedInd id e)
+    end.
+
   Definition check_wf_type id Σ t :=
     wrap_error id (infer_type Σ (infer Σ) [] t) ;; ret ().
 
   Definition check_wf_judgement id Σ t ty :=
     wrap_error id (check Σ [] t ty) ;; ret ().
+
+  Definition check_wf_inds id Σ inds :=
+    wrap_error_ind id (infer_inds Σ inds) ;; ret ().
 
   Definition infer_term Σ t :=
     wrap_error "" (infer Σ [] t).
@@ -877,9 +974,7 @@ Section Checker.
       | Some term => check_wf_judgement id Σ term cst.(cst_type)
       | None => check_wf_type id Σ cst.(cst_type)
       end
-    | InductiveDecl id inds =>
-      List.fold_left (fun acc body =>
-                        acc ;; check_wf_type body.(ind_name) Σ body.(ind_type)) inds.(ind_bodies) (ret ())
+    | InductiveDecl id inds => check_wf_inds id Σ inds
     end.
 
   Fixpoint check_fresh id env : EnvCheck () :=
