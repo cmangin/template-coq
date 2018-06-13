@@ -22,6 +22,8 @@ let check env evm c =
      CErrors.user_err ~hdr:"template-coq" (str "Already declared: " ++ pr_char_list id)
   | EnvError (IllFormedDecl (id, e)) ->
      CErrors.user_err ~hdr:"template-coq" (pr_char_list (Checker0.string_of_type_error e) ++ str ", while checking " ++ pr_char_list id)
+  | EnvError (IllFormedInd (id, e)) ->
+     CErrors.user_err ~hdr:"template-coq" (pr_char_list (Checker0.string_of_inductive_error e) ++ str ", while checking " ++ pr_char_list id)
     
 VERNAC COMMAND EXTEND TemplateCheck CLASSIFIED AS QUERY
 | [ "Template" "Check" constr(c) ] -> [

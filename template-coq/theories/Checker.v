@@ -1055,9 +1055,11 @@ Section Indtypes.
     | TypeError e => IndError (IndTypeError e)
     end.
 
-  Definition ind_check_wf_type Σ t :=
-    ind_wrap_error (infer_type Σ (infer Σ) [] t) ;; ret ().
+  Definition ind_check_wf_type Σ Γ t :=
+    ind_wrap_error (infer_type Σ (infer Σ) Γ t) ;; ret ().
 
+
+  (* TODO Move the following functions to someplace relevant. *)
   Definition decompose_prod_n (n : nat) (ty : term) : option (list (name * term) * term) :=
     let fix aux (n : nat) (acc : list (name * term)) (ty : term) :=
       match n with
@@ -1067,15 +1069,23 @@ Section Indtypes.
         | tProd na a ty' => aux n' ((na, a) :: acc) ty'
         | _ => None
         end
-     end
-   in aux n [] ty.
+      end
+    in aux n [] ty.
+
+  Definition eq_name (na1 na2 : name) : bool :=
+    match na1, na2 with
+    | nAnon, nAnon => true
+    | nNamed id1, nNamed id2 => eq_string id1 id2
+    | _, _ => false
+    end.
+  (* TODO Move the functions above this comment. *)
 
   (* Check that the arities of the inductive types are well-formed. *)
   (* Return the common list of parameters. *)
   Definition infer_arities_inds (Σ : global_context)
     (ind_decl : mutual_inductive_body) : IndCheck (list (name * term)) :=
     (* All arities are types. *)
-    List.fold_left (fun acc body => acc ;; ind_check_wf_type Σ body.(ind_type))
+    List.fold_left (fun acc body => acc ;; ind_check_wf_type Σ [] body.(ind_type))
       ind_decl.(ind_bodies) (ret ()) ;;
     (* Try to get a list of parameters. *)
     params <- (
@@ -1086,6 +1096,7 @@ Section Indtypes.
         end ;;
       match decompose_prod_n ind_decl.(ind_npars) one_type with
       | None => raise (BadInductive "Not enough products")
+      (* TODO Can params be anonymous? *)
       | Some (params, _) => ret params
       end
     );;
@@ -1093,14 +1104,22 @@ Section Indtypes.
     List.fold_left (fun acc body =>
       match decompose_prod_n ind_decl.(ind_npars) body.(ind_type) with
       | None => raise (BadInductive "Not enough products")
-      | Some (params', _) => acc
+      | Some (params', _) => if @forallb2 (name * term) (fun '(na, ty) '(na', ty') =>
+      eq_name na na' && eq_term (snd Σ) ty ty') params params' then acc else
+      raise (BadInductive "All inductive types must have syntactically equal parameters")
       end
     ) ind_decl.(ind_bodies) (ret params).
+
+  Definition infer_constrs_inds (Σ : global_context) (Γ : context) (ind : one_inductive_body) : IndCheck () :=
+    List.fold_left (fun acc '(na, ty, n) =>
+    (* TODO Check that the type has the correct shape. *)
+      acc ;; ind_check_wf_type Σ Γ ty) ind.(ind_ctors) (ret ()).
 
   Definition infer_inds (Σ : global_context)
     (ind_decl : mutual_inductive_body) : IndCheck () :=
     params <- infer_arities_inds Σ ind_decl ;;
-    ret ().
+    let Γ := List.map (fun ind => vass (nNamed ind.(ind_name)) ind.(ind_type)) ind_decl.(ind_bodies) in
+    List.fold_left (fun acc ind => acc ;; infer_constrs_inds Σ Γ ind) ind_decl.(ind_bodies) (ret ()).
 
 End Indtypes.
 
