@@ -26,6 +26,8 @@ let check gr =
      CErrors.user_err ~hdr:"template-coq" (str "Already declared: " ++ pr_char_list id)
   | EnvError (IllFormedDecl (id, e)) ->
      CErrors.user_err ~hdr:"template-coq" (str "Type error while checking: " ++ pr_char_list id)
+  | EnvError (IllFormedInd (id, e)) ->
+     CErrors.user_err ~hdr:"template-coq" (str "Type error while checking: " ++ pr_char_list id)
     
 VERNAC COMMAND EXTEND TemplateCheck CLASSIFIED AS QUERY
 | [ "Template" "Check" global(gr) ] -> [
